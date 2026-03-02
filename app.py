@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 from fredapi import Fred
 import yfinance as yf
 from datetime import datetime, timedelta
@@ -13,29 +12,34 @@ warnings.filterwarnings("ignore")
 # PAGE CONFIG
 # =============================================================================
 st.set_page_config(
-    page_title="MACRO CORE ENGINE v1.1",
+    page_title="MACRO CORE ENGINE v1.2",
     page_icon="🧭",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 # =============================================================================
-# GLOBAL CSS — versione più leggibile
+# GLOBAL CSS — THEME GRAPHITE + NEON
 # =============================================================================
 st.markdown("""
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;700;800&display=swap');
 
   :root {
-    --bg:      #05070c;
-    --surface: #0d111a;
-    --border:  #1b2635;
-    --cyan:    #00f5c4;
-    --red:     #ff4d6d;
-    --amber:   #f5a623;
-    --blue:    #4da6ff;
-    --text:    #d4e0f0;
-    --muted:   #7f93aa;
+    --bg:        #111418;
+    --surface:   #1a1f24;
+    --surface2:  #20262d;
+    --border:    #2a323a;
+    --border-soft:#252c34;
+    --text:      #e6edf3;
+    --muted:     #8b9bb0;
+
+    --neon-cyan:    #00f7ff;
+    --neon-magenta: #ff2bd4;
+    --neon-lime:    #c6ff1a;
+    --elec-blue:    #3f8cff;
+    --hot-orange:   #ff8f1f;
+    --danger-red:   #ff4d6d;
   }
 
   html, body,
@@ -48,48 +52,56 @@ st.markdown("""
   }
 
   [data-testid="stSidebar"] {
-    background-color: var(--surface) !important;
+    background-color: #14181d !important;
     border-right: 1px solid var(--border) !important;
   }
 
   header[data-testid="stHeader"] {
-    background: var(--bg) !important;
+    background: #101318 !important;
     border-bottom: 1px solid var(--border) !important;
   }
 
-  .block-container { padding-top: 3.5rem; padding-bottom: 2rem; }
+  .block-container { padding-top: 2.5rem; padding-bottom: 2rem; }
   h1,h2,h3 { font-family: 'Syne', sans-serif !important; }
 
   .main-title {
     font-family: 'Syne', sans-serif;
-    font-size: 2.1rem;
+    font-size: 2.2rem;
     font-weight: 800;
-    color: var(--cyan);
+    color: var(--neon-cyan);
     letter-spacing: -0.5px;
     text-transform: uppercase;
   }
   .sub-title {
-    font-size: 0.75rem;
+    font-size: 0.8rem;
     color: var(--muted);
     letter-spacing: 3px;
     text-transform: uppercase;
     margin-top: 4px;
   }
+  .header-divider {
+    border-bottom: 1px solid var(--border);
+    margin-top: 10px;
+    margin-bottom: 14px;
+  }
+
   .section-label {
     font-family: 'Syne', sans-serif;
     font-size: 0.7rem;
     letter-spacing: 3px;
     text-transform: uppercase;
     color: var(--muted);
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid var(--border-soft);
     padding-bottom: 4px;
-    margin-bottom: 12px;
-    margin-top: 22px;
+    margin-bottom: 10px;
+    margin-top: 18px;
   }
+
   .metric-tile {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 4px;
+    background: radial-gradient(circle at top left, rgba(0,247,255,0.06), transparent 55%),
+                var(--surface);
+    border: 1px solid var(--border-soft);
+    border-radius: 6px;
     padding: 12px 14px;
     position: relative;
     overflow: hidden;
@@ -100,11 +112,13 @@ st.markdown("""
     position: absolute;
     top: 0; left: 0;
     width: 3px; height: 100%;
-    background: var(--cyan);
+    background: var(--elec-blue);
   }
-  .metric-tile.red::before   { background: var(--red); }
-  .metric-tile.amber::before { background: var(--amber); }
-  .metric-tile.blue::before  { background: var(--blue); }
+  .metric-tile.red::before   { background: var(--danger-red); }
+  .metric-tile.amber::before { background: var(--hot-orange); }
+  .metric-tile.cyan::before  { background: var(--neon-cyan); }
+  .metric-tile.lime::before  { background: var(--neon-lime); }
+
   .metric-label {
     font-size: 0.7rem;
     letter-spacing: 2px;
@@ -113,38 +127,52 @@ st.markdown("""
   }
   .metric-value {
     font-family: 'Syne', sans-serif;
-    font-size: 1.6rem;
+    font-size: 1.7rem;
     font-weight: 700;
-    color: #eaf3ff;
+    color: #f5f7fb;
     line-height: 1.1;
+    text-shadow: 0 0 6px rgba(0,247,255,0.35);
   }
   .metric-sub {
     font-size: 0.7rem;
     color: var(--muted);
     margin-top: 4px;
   }
+
   .pill {
     display: inline-block;
     padding: 2px 10px;
-    border-radius: 2px;
+    border-radius: 999px;
     font-size: 0.65rem;
     letter-spacing: 2px;
     text-transform: uppercase;
     font-weight: 700;
   }
-  .pill-bull { background: rgba(0,245,196,0.12);  color: #00f5c4; border: 1px solid #00f5c4; }
-  .pill-bear { background: rgba(255,77,109,0.12); color: #ff4d6d; border: 1px solid #ff4d6d; }
-  .pill-neut { background: rgba(245,166,35,0.12); color: #f5a623; border: 1px solid #f5a623; }
+  .pill-bull {
+    background: radial-gradient(circle at top left, rgba(198,255,26,0.18), transparent 55%);
+    color: var(--neon-lime);
+    border: 1px solid var(--neon-lime);
+  }
+  .pill-bear {
+    background: radial-gradient(circle at top left, rgba(255,77,109,0.18), transparent 55%);
+    color: var(--danger-red);
+    border: 1px solid var(--danger-red);
+  }
+  .pill-neut {
+    background: radial-gradient(circle at top left, rgba(255,143,31,0.18), transparent 55%);
+    color: var(--hot-orange);
+    border: 1px solid var(--hot-orange);
+  }
 
   .sidebar-section {
     font-size: 0.75rem;
     font-weight: 700;
     letter-spacing: 2px;
     text-transform: uppercase;
-    color: var(--amber);
+    color: var(--hot-orange);
     margin-top: 18px;
     margin-bottom: 4px;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid var(--border-soft);
     padding-bottom: 4px;
   }
   [data-testid="stSidebar"] label {
@@ -153,12 +181,76 @@ st.markdown("""
     font-family: 'Space Mono', monospace !important;
   }
 
-  .regime-quad {
-    border-radius: 6px;
-    padding: 16px 18px;
-    text-align: center;
-    border: 1px solid;
-    font-size: 0.8rem;
+  .regime-badge {
+    background: radial-gradient(circle at top left, rgba(0,247,255,0.18), transparent 55%),
+                var(--surface2);
+    border-radius: 8px;
+    border: 1px solid var(--neon-cyan);
+    padding: 10px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .regime-title {
+    font-size: 0.7rem;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .regime-label {
+    font-family: 'Syne', sans-serif;
+    font-size: 1.2rem;
+    font-weight: 800;
+    letter-spacing: 1px;
+  }
+  .regime-desc {
+    font-size: 0.7rem;
+    color: var(--muted);
+  }
+
+  .macro-summary {
+    background: var(--surface);
+    border-radius: 8px;
+    border: 1px solid var(--border-soft);
+    padding: 10px 12px;
+  }
+  .macro-summary-title {
+    font-size: 0.7rem;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+  .macro-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0,1fr));
+    gap: 6px 10px;
+  }
+  .macro-summary-item-label {
+    font-size: 0.7rem;
+    color: var(--muted);
+  }
+  .macro-summary-item-value {
+    font-size: 0.9rem;
+    color: var(--text);
+    font-weight: 600;
+  }
+
+  .sparkline-container {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    padding: 6px 0;
+    border-bottom: 1px dashed var(--border-soft);
+  }
+  .sparkline-label {
+    font-size: 0.75rem;
+    color: var(--text);
+  }
+  .sparkline-sub {
+    font-size: 0.7rem;
+    color: var(--muted);
   }
 </style>
 """, unsafe_allow_html=True)
@@ -166,15 +258,17 @@ st.markdown("""
 # =============================================================================
 # CONSTANTS
 # =============================================================================
-PLOT_BG  = "#05070c"
-PAPER_BG = "#0d111a"
-GRID_COL = "#1b2635"
-CYAN     = "#00f5c4"
-RED      = "#ff4d6d"
-AMBER    = "#f5a623"
-BLUE     = "#4da6ff"
-TEXT_COL = "#d4e0f0"
-MUTED    = "#7f93aa"
+PLOT_BG  = "#111418"
+PAPER_BG = "#111418"
+GRID_COL = "#2a323a"
+NEON_CYAN    = "#00f7ff"
+NEON_MAGENTA = "#ff2bd4"
+NEON_LIME    = "#c6ff1a"
+ELEC_BLUE    = "#3f8cff"
+HOT_ORANGE   = "#ff8f1f"
+DANGER_RED   = "#ff4d6d"
+TEXT_COL     = "#e6edf3"
+MUTED        = "#8b9bb0"
 
 FRED_API_KEY = "938a76ed726e8351f43e1b0c36365784"
 
@@ -188,10 +282,19 @@ def base_layout(title="", height=320):
         paper_bgcolor=PAPER_BG,
         plot_bgcolor=PLOT_BG,
         font=dict(family="Space Mono", color=TEXT_COL, size=11),
-        xaxis=dict(gridcolor=GRID_COL, showgrid=True, zeroline=False, tickfont=dict(size=10)),
-        yaxis=dict(gridcolor=GRID_COL, showgrid=True, zeroline=False, tickfont=dict(size=10)),
-        margin=dict(l=55, r=40, t=40, b=40),
-        legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(size=10)),
+        xaxis=dict(
+            gridcolor=GRID_COL, showgrid=True, zeroline=False,
+            tickfont=dict(size=10, color=MUTED)
+        ),
+        yaxis=dict(
+            gridcolor=GRID_COL, showgrid=True, zeroline=False,
+            tickfont=dict(size=10, color=MUTED)
+        ),
+        margin=dict(l=55, r=40, t=40, b=60),
+        legend=dict(
+            font=dict(size=11, color=TEXT_COL),
+            bgcolor="rgba(0,0,0,0)",
+        ),
         hovermode="x unified",
     )
 
@@ -222,9 +325,9 @@ def percentile_score(series, value):
     return float(pct)
 
 def score_color(score):
-    if score >= 60: return CYAN
-    if score >= 40: return AMBER
-    return RED
+    if score >= 60: return NEON_LIME
+    if score >= 40: return HOT_ORANGE
+    return DANGER_RED
 
 def score_pill(score):
     if score >= 60: return "BULL"
@@ -361,11 +464,10 @@ def compute_fiscal_impulse(deficit):
     if deficit.empty:
         return pd.Series(dtype=float)
     return deficit.diff(1)
+
 # =============================================================================
 # SCORING — 5 PILLARS
 # =============================================================================
-ZSCORE_WINDOW_MONTHS = 36
-
 def score_pillar_monetary(data):
     indicators = {}
     scores = []
@@ -376,7 +478,6 @@ def score_pillar_monetary(data):
     ry  = data.get("REALYIELD", pd.Series())
     hy  = data.get("HY_OAS", pd.Series())
 
-    # M2/PIL
     m2_gdp = compute_m2_gdp_ratio(m2, gdp)
     if not m2_gdp.empty:
         m2_gdp_m = m2_gdp.resample("M").interpolate()
@@ -391,7 +492,6 @@ def score_pillar_monetary(data):
             "desc": "Liquidità relativa: M2 / PIL nominale"
         }
 
-    # M2 reale
     m2_real = compute_m2_real(m2, cpi)
     if not m2_real.empty:
         last_val = float(m2_real.iloc[-1])
@@ -405,7 +505,6 @@ def score_pillar_monetary(data):
             "desc": "M2 deflazionato da CPI"
         }
 
-    # Velocity
     vel = compute_velocity(m2, gdp)
     if not vel.empty:
         vel_m = vel.resample("M").interpolate()
@@ -420,7 +519,6 @@ def score_pillar_monetary(data):
             "desc": "Velocità della moneta: PIL nominale / M2"
         }
 
-    # Real Yield (basso = bull)
     if not ry.empty:
         ry_m = ry.resample("M").last()
         last_val = float(ry_m.iloc[-1])
@@ -435,7 +533,6 @@ def score_pillar_monetary(data):
             "desc": "Tasso reale 10Y · basso/negativo = favorevole a risk assets"
         }
 
-    # HY OAS (basso = bull)
     if not hy.empty:
         hy_m = hy.resample("M").last()
         last_val = float(hy_m.iloc[-1])
@@ -457,7 +554,6 @@ def score_pillar_real_economy(data, pmi_manual):
     indicators = {}
     scores = []
 
-    # PMI manuale
     if pmi_manual is not None:
         pmi_score = min(100, max(0, (pmi_manual - 30) / (70 - 30) * 100))
         scores.append(pmi_score)
@@ -469,7 +565,6 @@ def score_pillar_real_economy(data, pmi_manual):
             "desc": ">52 espansione · <48 contrazione"
         }
 
-    # Produzione industriale YoY
     indpro = data.get("INDPRO", pd.Series())
     if not indpro.empty:
         ip_yoy = compute_yoy(indpro, 12).dropna()
@@ -485,7 +580,6 @@ def score_pillar_real_economy(data, pmi_manual):
                 "desc": "Produzione industriale · variazione % anno su anno"
             }
 
-    # Disoccupazione Δ3M (scende = bull)
     unrate = data.get("UNRATE", pd.Series())
     if not unrate.empty:
         du = compute_unrate_3m_change(unrate).dropna()
@@ -657,13 +751,13 @@ def compute_regime(growth_score, inflation_score):
     high_inflation = inflation_score >= 50
 
     if high_growth and not high_inflation:
-        return "GOLDILOCKS", CYAN, "Crescita senza inflazione — ottimale per equity"
+        return "GOLDILOCKS", NEON_LIME, "Crescita senza inflazione — ottimale per equity"
     elif high_growth and high_inflation:
-        return "INFLATIONARY BOOM", AMBER, "Crescita con inflazione — favorevole a real assets"
+        return "INFLATIONARY BOOM", HOT_ORANGE, "Crescita con inflazione — favorevole a real assets"
     elif not high_growth and high_inflation:
-        return "STAGFLATION", RED, "Bassa crescita + alta inflazione"
+        return "STAGFLATION", DANGER_RED, "Bassa crescita + alta inflazione"
     else:
-        return "DISINFLATIONARY BUST", BLUE, "Bassa crescita + bassa inflazione — favorevole a bond"
+        return "DISINFLATIONARY BUST", ELEC_BLUE, "Bassa crescita + bassa inflazione — favorevole a bond"
 
 # =============================================================================
 # SESSION DEFAULTS
@@ -680,10 +774,10 @@ for k, v in defaults.items():
 # =============================================================================
 with st.sidebar:
     st.markdown(
-        '<div style="font-family:Syne;font-size:1.2rem;font-weight:800;color:#00f5c4;letter-spacing:-0.5px;">🧭 MACRO CORE ENGINE</div>',
+        '<div style="font-family:Syne;font-size:1.2rem;font-weight:800;color:#00f7ff;letter-spacing:-0.5px;">🧭 MACRO CORE ENGINE</div>',
         unsafe_allow_html=True)
     st.markdown(
-        '<div style="font-size:0.7rem;letter-spacing:3px;color:#4a6070;text-transform:uppercase;margin-bottom:16px;">Macro Regime Monitor v1.1</div>',
+        '<div style="font-size:0.7rem;letter-spacing:3px;color:#4a6070;text-transform:uppercase;margin-bottom:16px;">Macro Regime Monitor v1.2 · Graphite Neon</div>',
         unsafe_allow_html=True)
 
     st.markdown('<div class="sidebar-section">📊 PMI Composito</div>', unsafe_allow_html=True)
@@ -734,54 +828,99 @@ growth_score    = float(np.mean([real_score, prod_score]))
 inflation_proxy = 100 - monetary_score
 composite_score = float(np.mean(list(pillar_scores.values())))
 
+# Macro breadth: % pilastri > 50
+breadth = 100 * np.mean([s > 50 for s in pillar_scores.values()])
+
+# Regime confidence: distanza media da 50
+regime_conf = float(np.mean([abs(s - 50) for s in pillar_scores.values()]))
+
 regime_label, regime_color, regime_desc = compute_regime(growth_score, inflation_proxy)
 
 # =============================================================================
-# MAIN LAYOUT
+# MAIN LAYOUT — 3 COLUMNS
 # =============================================================================
-col_main, col_side = st.columns([3, 1.4])
+top_col1, top_col2 = st.columns([2.2, 1.2])
 
-with col_main:
+with top_col1:
     st.markdown('<div class="main-title">MACRO CORE ENGINE</div>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="sub-title">Macro Regime Monitor · 5 Pilastri · FRED API + Mercati</div>',
+        '<div class="sub-title">MACRO REGIME MONITOR · 5 PILASTRI · FRED + MERCATI</div>',
         unsafe_allow_html=True)
     st.markdown(
-        f'<div style="font-size:0.75rem;color:{MUTED};margin-top:6px;">'
+        f'<div style="font-size:0.75rem;color:{MUTED};margin-top:4px;">'
         f'Last update: {datetime.utcnow().strftime("%Y-%m-%d %H:%M")} UTC · '
-        f'Percentile-based scoring</div>',
+        f'Percentile-based scoring · v1.2 Graphite Neon</div>',
         unsafe_allow_html=True)
+    st.markdown('<div class="header-divider"></div>', unsafe_allow_html=True)
 
-    st.markdown('<div class="section-label">Regime macro</div>', unsafe_allow_html=True)
-    c1, c2, c3 = st.columns([1.4, 1.2, 1.4])
+with top_col2:
+    st.markdown(
+        f"""
+        <div class="regime-badge" style="border-color:{regime_color};box-shadow:0 0 12px rgba(0,0,0,0.6);">
+          <div class="regime-title">Regime macro attuale</div>
+          <div class="regime-label" style="color:{regime_color};text-shadow:0 0 10px rgba(255,255,255,0.25);">
+            {regime_label}
+          </div>
+          <div class="regime-desc">{regime_desc}</div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
-    with c1:
-        st.markdown(
-            f'<div class="metric-tile" style="border-color:{regime_color};">'
-            f'<div class="metric-label">Regime attuale</div>'
-            f'<div class="metric-value" style="color:{regime_color};">{regime_label}</div>'
-            f'<div class="metric-sub">{regime_desc}</div>'
-            f'</div>', unsafe_allow_html=True)
+main_col_left, main_col_center, main_col_right = st.columns([1.3, 2.2, 1.5])
 
-    with c2:
-        st.markdown(tile_html(
-            "Composite Score",
-            f"{composite_score:.1f}",
-            "Media 5 pilastri (0–100)",
-            color_class="blue",
-            pill=score_pill(composite_score)
-        ), unsafe_allow_html=True)
+# =============================================================================
+# LEFT COLUMN — MACRO SUMMARY
+# =============================================================================
+with main_col_left:
+    st.markdown('<div class="section-label">Macro summary</div>', unsafe_allow_html=True)
+    st.markdown('<div class="macro-summary">', unsafe_allow_html=True)
+    st.markdown('<div class="macro-summary-title">Key metrics</div>', unsafe_allow_html=True)
 
-    with c3:
-        st.markdown(tile_html(
-            "Growth Score",
-            f"{growth_score:.1f}",
-            "Econ. Reale + Produttivo",
-            color_class="blue",
-            pill=score_pill(growth_score)
-        ), unsafe_allow_html=True)
+    st.markdown(
+        f"""
+        <div class="macro-summary-grid">
+          <div>
+            <div class="macro-summary-item-label">Composite Score</div>
+            <div class="macro-summary-item-value" style="color:{NEON_CYAN};">{composite_score:.1f}</div>
+          </div>
+          <div>
+            <div class="macro-summary-item-label">Growth Score</div>
+            <div class="macro-summary-item-value" style="color:{NEON_LIME};">{growth_score:.1f}</div>
+          </div>
+          <div>
+            <div class="macro-summary-item-label">Inflation Proxy</div>
+            <div class="macro-summary-item-value" style="color:{HOT_ORANGE};">{inflation_proxy:.1f}</div>
+          </div>
+          <div>
+            <div class="macro-summary-item-label">Macro Breadth</div>
+            <div class="macro-summary-item-value" style="color:{ELEC_BLUE};">{breadth:.1f}%</div>
+          </div>
+          <div>
+            <div class="macro-summary-item-label">Regime Confidence</div>
+            <div class="macro-summary-item-value" style="color:{NEON_MAGENTA};">{regime_conf:.1f}</div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+    st.markdown('</div>', unsafe_allow_html=True)
 
+    st.markdown('<div class="section-label">PMI composito</div>', unsafe_allow_html=True)
+    st.markdown(tile_html(
+        "PMI Composito",
+        f"{st.session_state['pmi_composite']:.1f}",
+        "USA / Globale · soglia 50",
+        color_class="cyan",
+        pill=score_pill(real_score)
+    ), unsafe_allow_html=True)
+
+# =============================================================================
+# CENTER COLUMN — CHARTS
+# =============================================================================
+with main_col_center:
     st.markdown('<div class="section-label">Score per pilastro</div>', unsafe_allow_html=True)
+
     fig_bar = go.Figure()
     names = list(pillar_scores.keys())
     vals  = list(pillar_scores.values())
@@ -795,7 +934,8 @@ with col_main:
         textposition="outside"
     )
     layout_bar = base_layout("Score per pilastro (0–100)", height=320)
-    layout_bar["yaxis"] = dict(range=[0, 100], gridcolor=GRID_COL)
+    layout_bar["yaxis"] = dict(range=[0, 100], gridcolor=GRID_COL, tickfont=dict(size=10, color=MUTED))
+    layout_bar["xaxis"]["tickfont"] = dict(size=10, color=MUTED)
     fig_bar.update_layout(**layout_bar)
     st.plotly_chart(fig_bar, use_container_width=True)
 
@@ -828,11 +968,11 @@ with col_main:
             "HY Spread": hy,
         }
         colors_z = {
-            "M2/PIL": CYAN,
-            "M2 reale": BLUE,
-            "Velocity": "#9b59b6",
-            "Real Yield 10Y": RED,
-            "HY Spread": AMBER,
+            "M2/PIL": NEON_CYAN,
+            "M2 reale": ELEC_BLUE,
+            "Velocity": NEON_MAGENTA,
+            "Real Yield 10Y": DANGER_RED,
+            "HY Spread": HOT_ORANGE,
         }
 
         fig_z = go.Figure()
@@ -848,7 +988,7 @@ with col_main:
                 y=z,
                 mode="lines",
                 name=name,
-                line=dict(color=colors_z[name], width=2.2),
+                line=dict(color=colors_z[name], width=2.4),
             ))
 
         fig_z.add_hline(y=1.5, line_dash="dot", line_color=MUTED, line_width=1,
@@ -858,29 +998,91 @@ with col_main:
                         annotation_text="-1.5σ", annotation_position="bottom right",
                         annotation_font=dict(color=MUTED, size=9))
 
-        layout_z = base_layout("Z-Score indicatori monetari (ultimi 8 anni)", height=360)
-        layout_z["yaxis"] = dict(gridcolor=GRID_COL, zeroline=False, range=[-4, 4])
+        layout_z = base_layout("Z-Score indicatori monetari (ultimi 8 anni)", height=380)
+        layout_z["yaxis"] = dict(gridcolor=GRID_COL, zeroline=False, range=[-4, 4],
+                                 tickfont=dict(size=10, color=MUTED))
+        layout_z["xaxis"]["tickfont"] = dict(size=10, color=MUTED)
+
+        # legenda sotto il grafico, orizzontale, grande
+        layout_z["legend"] = dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.22,
+            xanchor="center",
+            x=0.5,
+            font=dict(size=13, color=TEXT_COL),
+            bgcolor="rgba(17,20,24,0.95)",
+            bordercolor=GRID_COL,
+            borderwidth=1,
+            itemclick="toggleothers",
+            itemdoubleclick="toggle"
+        )
+
         fig_z.update_layout(**layout_z)
         st.plotly_chart(fig_z, use_container_width=True)
 
-with col_side:
+# =============================================================================
+# RIGHT COLUMN — PILLAR DETAILS + SPARKLINES
+# =============================================================================
+with main_col_right:
     st.markdown('<div class="section-label">Dettaglio pilastri</div>', unsafe_allow_html=True)
 
-    def render_pillar_block(title, score, indicators):
-        st.markdown(f"**{title} — {score:.1f}/100**  {signal_pill(score_pill(score))}", unsafe_allow_html=True)
+    def render_sparkline(series, color):
+        if series is None or isinstance(series, pd.Series) and series.empty:
+            return None
+        if isinstance(series, pd.Series):
+            s = series.dropna()
+        else:
+            return None
+        if len(s) < 5:
+            return None
+        s = s.iloc[-60:]
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=s.index,
+            y=s.values,
+            mode="lines",
+            line=dict(color=color, width=1.6),
+            hoverinfo="skip"
+        ))
+        fig.update_layout(
+            height=40,
+            margin=dict(l=0, r=0, t=0, b=0),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            xaxis=dict(visible=False),
+            yaxis=dict(visible=False),
+        )
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+    def render_pillar_block(title, score, indicators, color):
+        st.markdown(
+            f"<div style='font-size:0.8rem;font-weight:700;color:{color};margin-top:4px;'>"
+            f"{title} — {score:.1f}/100&nbsp;&nbsp;{signal_pill(score_pill(score))}</div>",
+            unsafe_allow_html=True
+        )
         for name, info in indicators.items():
             val = info["value"]
             unit = info["unit"]
             desc = info["desc"]
             st.markdown(
-                f"<div style='font-size:0.8rem;color:{TEXT_COL};margin-top:4px;'><b>{name}</b>: "
-                f"{val} {unit}<br><span style='color:{MUTED};font-size:0.75rem;'>{desc}</span></div>",
+                f"<div class='sparkline-container'>"
+                f"<div style='flex:1;'>"
+                f"<div class='sparkline-label'><b>{name}</b>: {val} {unit}</div>"
+                f"<div class='sparkline-sub'>{desc}</div>"
+                f"</div>",
                 unsafe_allow_html=True
             )
-        st.markdown("<hr style='border:0;border-top:1px solid #1b2635;margin:10px 0;'>", unsafe_allow_html=True)
+            render_sparkline(info.get("series"), color)
+            st.markdown("</div>", unsafe_allow_html=True)
 
-    render_pillar_block("A · Monetario", monetary_score, monetary_ind)
-    render_pillar_block("B · Economia reale", real_score, real_ind)
-    render_pillar_block("C · Fiscale", fiscal_score, fiscal_ind)
-    render_pillar_block("D · Produttivo", prod_score, prod_ind)
-    render_pillar_block("E · Geopolitico", geo_score, geo_ind)
+        st.markdown(
+            "<hr style='border:0;border-top:1px solid #2a323a;margin:8px 0 10px 0;'>",
+            unsafe_allow_html=True
+        )
+
+    render_pillar_block("A · Monetario", monetary_score, monetary_ind, NEON_CYAN)
+    render_pillar_block("B · Economia reale", real_score, real_ind, NEON_LIME)
+    render_pillar_block("C · Fiscale", fiscal_score, fiscal_ind, HOT_ORANGE)
+    render_pillar_block("D · Produttivo", prod_score, prod_ind, ELEC_BLUE)
+    render_pillar_block("E · Geopolitico", geo_score, geo_ind, NEON_MAGENTA)
