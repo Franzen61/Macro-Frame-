@@ -942,11 +942,10 @@ with tab1:
         fig_bars.add_hline(y=float(composite), line_dash="solid", line_color=AMBER, line_width=2,
                            annotation_text=f"Composite: {composite:.0f}", annotation_position="right",
                            annotation_font=dict(color=AMBER, size=10))
-        fig_bars.update_layout(
-            **base_layout("Score per Pilastro (0–100)", 320),
-            yaxis=dict(range=[0, 110], gridcolor=GRID_COL),
-            showlegend=False,
-        )
+        _layout_bars = base_layout("Score per Pilastro (0–100)", 320)
+        _layout_bars["yaxis"] = dict(range=[0, 110], gridcolor=GRID_COL)
+        _layout_bars["showlegend"] = False
+        fig_bars.update_layout(**_layout_bars)
         st.plotly_chart(fig_bars, use_container_width=True, config={"displayModeBar": False})
 
         # Composite summary tiles
