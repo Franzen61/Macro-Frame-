@@ -6,144 +6,139 @@ from fredapi import Fred
 import yfinance as yf
 from datetime import datetime, timedelta
 
-# =============================================================================
-# 1. SETUP & STYLING (Stile Claude "Graphite & Neon")
-# =============================================================================
-st.set_page_config(page_title="MACRO CORE TERMINAL", layout="wide", initial_sidebar_state="collapsed")
+# --- CONFIGURAZIONE ---
+ST_STYLE = {"cyan": "#00f5c4", "red": "#ff4d6d", "amber": "#f5a623", "blue": "#4da6ff", "bg": "#070b12"}
+FRED_API_KEY = '938a76ed726e8351f43e1b0c36365784' 
 
-# Palette colori istituzionale
-CYAN, RED, AMBER, BLUE = "#00f5c4", "#ff4d6d", "#f5a623", "#4da6ff"
-BG_COL, SURF_COL, BORDER_COL = "#070b12", "#0e1420", "#1c2a3a"
+st.set_page_config(page_title="MACRO TERMINAL PRO", layout="wide")
 
-st.markdown(f"""
-<style>
-    @import url('https://fonts.googleapis.com/css2?family=Space+Mono&family=Syne:wght@700;800&display=swap');
-    .stApp {{ background-color: {BG_COL}; color: #c8d8e8; font-family: 'Space Mono', monospace; }}
-    .macro-card {{ background: {SURF_COL}; border: 1px solid {BORDER_COL}; border-radius: 8px; padding: 20px; margin-bottom: 15px; }}
-    .stat-label {{ font-size: 0.7rem; color: #7a9ab0; letter-spacing: 2px; text-transform: uppercase; }}
-    .stat-value {{ font-family: 'Syne', sans-serif; font-size: 1.8rem; font-weight: 800; color: {CYAN}; }}
-    .z-score {{ font-size: 0.85rem; font-weight: bold; }}
-    h1, h2, h3 {{ font-family: 'Syne', sans-serif; color: white; }}
-</style>
-""", unsafe_allow_html=True)
+# --- ENGINE STATISTICO ---
+def get_zscore(series, window=252*3): # 3 anni di lookback
+    if len(series) < 60: return 0
+    mean = series.rolling(window=window).mean()
+    std = series.rolling(window=window).std()
+    z = (series - mean) / std
+    return z.iloc[-1]
 
-# =============================================================================
-# 2. CORE ENGINE (Logica Statistica & Data Fetching)
-# =============================================================================
-FRED_API_KEY = '938a76ed726e8351f43e1b0c36365784'
+def z_to_score(z, invert=False):
+    # Trasforma uno Z-score (-3 a +3) in un punteggio 0-100
+    val = -z if invert else z
+    score = (val + 3) / 6 * 100
+    return max(0, min(100, score))
 
+# --- DATA LOADING ---
 @st.cache_data(ttl=3600)
-def get_macro_data():
+def fetch_data():
     fred = Fred(api_key=FRED_API_KEY)
-    start_date = (datetime.now() - timedelta(days=365*5))
-    
-    # Configurazioni: (Inverti_Zscore, Descrizione)
-    config = {
-        "M2SL": (False, "M2 Real Growth (YoY)"),
-        "MULT": (False, "M2 Velocity (GDP/M2)"),
-        "DFII10": (True, "Real Yield 10Y (Cost of Capital)"),
-        "BAMLH0A0HYM2": (True, "HY Credit Spreads"),
-        "INDPRO": (False, "Industrial Production YoY"),
-        "UNRATE": (True, "Unemployment Rate (Inverted)")
+    # Mapping: Nome -> (ID_FRED, Inverti_Zscore, Descrizione)
+    metrics = {
+        "M2_Velocity": ("MULT", False, "Velocità della moneta (GDP/M2)"),
+        "Real_Yield": ("DFII10", True, "Tassi Reali 10Y (Inverso)"),
+        "HY_Spread": ("BAMLH0A0HYM2", True, "Credit Stress (High Yield)"),
+        "Ind_Prod": ("INDPRO", False, "Produzione Industriale YoY"),
+        "Unemployment": ("UNRATE", True, "Tasso Disoccupazione (Inverso)"),
+        "M2_Real": ("M2SL", False, "M2 Deflazionato (CPI)")
     }
     
-    db = {}
-    for code, (invert, label) in config.items():
-        s = fred.get_series(code, observation_start=start_date).dropna()
-        if code in ["M2SL", "INDPRO"]: s = s.pct_change(12) * 100
-        
-        # Calcolo Z-Score (rolling 3 anni approx)
-        mean, std = s.mean(), s.std()
-        current_val = s.iloc[-1]
-        z = (current_val - mean) / std
-        score = max(0, min(100, ((-z if invert else z) + 3) / 6 * 100))
-        
-        db[label] = {"val": current_val, "z": z, "score": score, "history": s}
-    
-    # Stress Market Data (Yahoo Finance)
+    results = {}
+    for name, (fid, inv, desc) in metrics.items():
+        try:
+            s = fred.get_series(fid, observation_start='2015-01-01')
+            if name == "Ind_Prod" or name == "M2_Real":
+                s = s.pct_change(12) * 100 # YoY %
+            
+            z = get_zscore(s.dropna())
+            score = z_to_score(z, invert=inv)
+            results[name] = {"val": s.iloc[-1], "z": z, "score": score, "desc": desc, "history": s}
+        except:
+            continue
+            
+    # Market Data
     mkt = yf.download(["^MOVE", "^VIX", "CL=F"], period="5y", progress=False)['Close']
-    stress_map = {"^MOVE": "Bond Vol (MOVE)", "^VIX": "Equity Vol (VIX)", "CL=F": "Oil Shock (WTI)"}
-    for ticker, name in stress_map.items():
-        s = mkt[ticker].dropna()
-        z = (s.iloc[-1] - s.mean()) / s.std()
-        db[name] = {"val": s.iloc[-1], "z": z, "score": max(0, min(100, ((-z) + 3) / 6 * 100)), "history": s}
+    for col in mkt.columns:
+        z = get_zscore(mkt[col].dropna())
+        results[col] = {"val": mkt[col].iloc[-1], "z": z, "score": z_to_score(z, invert=True), "history": mkt[col]}
         
-    return db
+    return results
 
-# =============================================================================
-# 3. DASHBOARD RENDERING
-# =============================================================================
-try:
-    data = get_macro_data()
-    
-    # HEADER & REGIME CALCULATION
-    growth_idx = (data["Industrial Production YoY"]["score"] + data["M2 Velocity (GDP/M2)"]["score"]) / 2
-    liquidity_idx = data["M2 Real Growth (YoY)"]["score"]
-    
-    st.markdown(f"<h1>🧭 MACRO CORE TERMINAL <span style='color:{CYAN};font-size:1rem;'>v2.5 PRO</span></h1>", unsafe_allow_html=True)
-    
-    col_reg1, col_reg2 = st.columns([1, 2])
-    
-    with col_reg1:
-        # Logica Quadrante
-        if growth_idx > 50 and liquidity_idx > 50: reg, col, desc = "GOLDILOCKS", CYAN, "Espansione non inflattiva. Bullish Risk Assets."
-        elif growth_idx > 50 and liquidity_idx <= 50: reg, col, desc = "OVERHEATING", AMBER, "Crescita alta ma liquidità in calo. Prudenza."
-        elif growth_idx <= 50 and liquidity_idx > 50: reg, col, desc = "REFLATION", BLUE, "Supporto monetario in rallentamento economico."
-        else: reg, col, desc = "STAGFLATION/BUST", RED, "Contrazione e stress. Defensive mode ON."
+data = fetch_data()
+
+# --- UI INTERFACE ---
+st.title("🧭 MACRO CORE TERMINAL v2.5")
+st.markdown("---")
+
+# 1. TOP ROW: REGIME IDENTIFIER
+c1, c2, c3 = st.columns([1, 1, 2])
+
+# Calcolo Macro Quadrant
+growth = np.mean([data['Ind_Prod']['score'], data['M2_Velocity']['score']])
+inflation_risk = 100 - data['Real_Yield']['score']
+
+with c1:
+    st.metric("GROWTH SCORE", f"{growth:.1f}/100")
+    st.progress(growth/100)
+
+with c2:
+    st.metric("INFLATION RISK", f"{inflation_risk:.1f}/100")
+    st.progress(inflation_risk/100)
+
+with c3:
+    # Determinazione Regime Didascalico
+    if growth > 55 and inflation_risk < 45: 
+        regime, desc = "GOLDILOCKS", "Crescita robusta, inflazione bassa. Bullish per Equity e Bond."
+    elif growth > 55 and inflation_risk > 55:
+        regime, desc = "INFLATIONARY BOOM", "Surriscaldamento. Commodities UP, Bond BEARISH."
+    elif growth < 45 and inflation_risk > 55:
+        regime, desc = "STAGFLATION", "Il peggior scenario. Cash e Oro sono i rifugi."
+    else:
+        regime, desc = "DEFLATIONARY BUST", "Recessione. Bond governativi e Difensivi necessari."
         
+    st.subheader(f"REGIME: {regime}")
+    st.info(desc)
+
+# 2. MIDDLE ROW: ANALISI DETTAGLIATA (Z-SCORES)
+st.subheader("📊 Analisi Quantitativa degli Indicatori")
+cols = st.columns(len(data))
+
+for i, (name, info) in enumerate(data.items()):
+    with st.container():
+        color = ST_STYLE["cyan"] if info['score'] > 60 else ST_STYLE["red"] if info['score'] < 40 else ST_STYLE["amber"]
         st.markdown(f"""
-            <div style="border: 2px solid {col}; padding: 20px; border-radius: 10px; background: {SURF_COL};">
-                <div class="stat-label">Current Regime</div>
-                <div style="color:{col}; font-family:'Syne'; font-size:2rem; font-weight:800;">{reg}</div>
-                <p style="font-size:0.8rem; margin-top:10px; color:#abbbc9;">{desc}</p>
-            </div>
+        <div style="border-left: 5px solid {color}; padding-left: 10px; margin-bottom: 20px;">
+            <p style="font-size: 0.8rem; color: gray; margin-bottom: 0;">{name.replace('_', ' ')}</p>
+            <h3 style="margin-top: 0;">{info['val']:.2f}</h3>
+            <p style="font-size: 0.85rem;">Z-Score: <b>{info['z']:.2f}</b></p>
+        </div>
         """, unsafe_allow_html=True)
 
-    with col_reg2:
-        # Radar-style Summary Bar
-        fig_summary = go.Figure(go.Bar(
-            x=[k for k in data.keys()],
-            y=[v['score'] for v in data.values()],
-            marker_color=[CYAN if v['score']>60 else RED if v['score']<40 else AMBER for v in data.values()]
-        ))
-        fig_summary.update_layout(height=180, margin=dict(t=20, b=20, l=0, r=0), paper_bgcolor="rgba(0,0,0,0)", 
-                                  plot_bgcolor="rgba(0,0,0,0)", font=dict(color="white", size=9),
-                                  yaxis=dict(range=[0, 100], showgrid=False, zeroline=False))
-        st.plotly_chart(fig_summary, use_container_width=True, config={'displayModeBar': False})
+# 3. BOTTOM ROW: IL GRAFICO CHE MANCAVA (Visualizzatore di soglie)
+st.subheader("📈 Analisi Storica e Soglie Critiche")
+target_metric = st.selectbox("Seleziona indicatore da esplorare:", list(data.keys()))
+hist_data = data[target_metric]['history'].dropna()
 
-    # INDICATOR GRID
-    st.markdown("### 📊 Pillars Deep-Dive")
-    cols = st.columns(3)
-    for i, (name, info) in enumerate(data.items()):
-        target_col = cols[i % 3]
-        with target_col:
-            z_color = CYAN if abs(info['z']) < 1.5 else AMBER if abs(info['z']) < 2.5 else RED
-            st.markdown(f"""
-                <div class="macro-card">
-                    <div class="stat-label">{name}</div>
-                    <div class="stat-value">{info['val']:.2f}</div>
-                    <div class="z-score" style="color:{z_color}">Z-Score: {info['z']:.2f}</div>
-                </div>
-            """, unsafe_allow_html=True)
-            
-    # HISTORICAL ANALYSIS SECTION
-    st.markdown("### 📈 Historical Context & Thresholds")
-    selected = st.selectbox("Analizza serie storica:", list(data.keys()))
-    h_data = data[selected]['history']
-    
-    fig_hist = go.Figure()
-    fig_hist.add_trace(go.Scatter(x=h_data.index, y=h_data.values, line=dict(color=CYAN, width=2)))
-    
-    # Aggiunta soglie statistiche
-    mean = h_data.mean()
-    std = h_data.std()
-    for n in [-2, 0, 2]:
-        fig_hist.add_hline(y=mean + n*std, line_dash="dot", line_color="#3a4a5a", 
-                           annotation_text=f"{n} STD" if n != 0 else "MEAN")
-    
-    fig_hist.update_layout(template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", height=400)
-    st.plotly_chart(fig_hist, use_container_width=True)
+fig = go.Figure()
+fig.add_trace(go.Scatter(x=hist_data.index, y=hist_data.values, name="Valore Attuale", line=dict(color=ST_STYLE["cyan"], width=2)))
+# Aggiunta medie e deviazioni
+mean_val = hist_data.mean()
+std_val = hist_data.std()
 
-except Exception as e:
-    st.error(f"Errore nel caricamento dati: {e}")
-    st.info("Verifica la tua chiave API FRED o la connessione internet.")
+fig.add_hline(y=mean_val, line_dash="dash", line_color="white", annotation_text="Media")
+fig.add_hline(y=mean_val + 2*std_val, line_dash="dot", line_color=ST_STYLE["red"], annotation_text="+2 STD (Extreme)")
+fig.add_hline(y=mean_val - 2*std_val, line_dash="dot", line_color=ST_STYLE["red"], annotation_text="-2 STD (Extreme)")
+
+fig.update_layout(
+    template="plotly_dark", 
+    paper_bgcolor="rgba(0,0,0,0)", 
+    plot_bgcolor="rgba(0,0,0,0)",
+    height=450,
+    xaxis=dict(showgrid=False),
+    yaxis=dict(gridcolor="#1c2a3a")
+)
+st.plotly_chart(fig, use_container_width=True)
+
+st.markdown("""
+### 📖 Guida alla lettura
+* **Z-Score > 2.0 o < -2.0:** Il dato è in una condizione di eccesso statistico (95% di probabilità di rientro). Segnale di inversione imminente.
+* **M2 Velocity:** Se sale, la moneta circola. Se scende sotto lo Z-score di -1.5, il rischio recessione è altissimo.
+* **MOVE Index:** Sopra 120 indica instabilità sistemica nei titoli di stato.
+""")
