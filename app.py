@@ -53,11 +53,22 @@ FRED_API_KEY = '938a76ed726e8351f43e1b0c36365784'
 # ============================================================================
 # UTILS & MATH
 # ============================================================================
-def base_layout(title="", height=320):
-    return dict(height=height, title=dict(text=title, font=dict(family="Syne", size=12, color=TEXT_COL), x=0.01),
-                paper_bgcolor=PAPER_BG, plot_bgcolor=PLOT_BG, font=dict(family="Space Mono", color=TEXT_COL, size=10),
-                xaxis=dict(gridcolor=GRID_COL, showgrid=True), yaxis=dict(gridcolor=GRID_COL, showgrid=True),
-                margin=dict(l=40, r=40, t=40, b=30), hovermode="x unified")
+def base_layout(title="", height=320, margin=None):
+    # Se non passiamo margini, usiamo quelli di default
+    if margin is None:
+        margin = dict(l=40, r=40, t=40, b=30)
+        
+    return dict(
+        height=height, 
+        title=dict(text=title, font=dict(family="Syne", size=12, color=TEXT_COL), x=0.01),
+        paper_bgcolor=PAPER_BG, 
+        plot_bgcolor=PLOT_BG, 
+        font=dict(family="Space Mono", color=TEXT_COL, size=10),
+        xaxis=dict(gridcolor=GRID_COL, showgrid=True), 
+        yaxis=dict(gridcolor=GRID_COL, showgrid=True),
+        margin=margin, # Inserito direttamente qui
+        hovermode="x unified"
+    )
 
 def zscore_series(series, window):
     m = series.rolling(window, min_periods=window//2).mean()
@@ -234,86 +245,123 @@ def score_pillar_risk(mkt):
 # ============================================================================
 # UI & RENDERING
 # ============================================================================
+
 def render_sparkline(series, color):
-    if series is None or series.empty or len(series) < 5: return
-    s = series.dropna().iloc[-60:] # Ultimi 60 data point
-    fig = go.Figure(go.Scatter(x=s.index, y=s.values, mode="lines", line=dict(color=color, width=2), hoverinfo="skip"))
-    fig.update_layout(height=40, margin=dict(l=0, r=0, t=0, b=0), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis=dict(visible=False), yaxis=dict(visible=False))
+    """Renderizza un mini-grafico lineare senza assi (stile Copilot)"""
+    if series is None or series.empty or len(series) < 5:
+        return
+    
+    # Prendiamo gli ultimi 60 punti per mostrare il trend recente
+    s = series.dropna().tail(60)
+    
+    fig = go.Figure(go.Scatter(
+        x=s.index, 
+        y=s.values, 
+        mode="lines", 
+        line=dict(color=color, width=2), 
+        hoverinfo="skip"
+    ))
+    
+    fig.update_layout(
+        height=40, 
+        margin=dict(l=0, r=0, t=0, b=0), # Margini zero per la sparkline
+        paper_bgcolor="rgba(0,0,0,0)", 
+        plot_bgcolor="rgba(0,0,0,0)", 
+        xaxis=dict(visible=False), 
+        yaxis=dict(visible=False)
+    )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-if 'pmi_composite' not in st.session_state: st.session_state['pmi_composite'] = 51.5
+def render_pillar_tab(title, score, indicators, color_theme):
+    """Layout a griglia per i dettagli di ogni pilastro"""
+    st.markdown(f'<div class="section-label">{title}</div>', unsafe_allow_html=True)
+    
+    for name, data in indicators.items():
+        col1, col2 = st.columns([2, 1])
+        c = score_color(data['score'])
+        
+        with col1:
+            st.markdown(f"""
+            <div style="background:#0a0f18; border:1px solid #1c2a3a; border-radius:4px; padding:12px; margin-bottom:10px;">
+              <div style="font-size:0.6rem; color:{MUTED}; letter-spacing:2px">{name.upper()}</div>
+              <div style="font-family:Syne; font-size:1.2rem; color:{c}; font-weight:700">{data['val']} {data['unit']}</div>
+              <div style="font-size:0.55rem; color:#4a6070">{data['desc']} · Score: {data['score']:.0f}/100</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+        with col2:
+            st.markdown("<div style='margin-top:20px;'></div>", unsafe_allow_html=True)
+            if data.get('series') is not None:
+                render_sparkline(data['series'], c)
+            else:
+                st.markdown("<div style='font-size:0.7rem; color:#3a4a5a; text-align:center;'>Dato statico</div>", unsafe_allow_html=True)
+
+# --- LOGICA DI ESECUZIONE UI ---
+
+if 'pmi_composite' not in st.session_state: 
+    st.session_state['pmi_composite'] = 51.5
 
 with st.sidebar:
     st.markdown('<div style="font-family:Syne;font-size:1.1rem;font-weight:800;color:#00f5c4;">🧭 MACRO CORE v2</div>', unsafe_allow_html=True)
     st.markdown('<div class="section-label" style="margin-top:10px;">📊 Input Manuale</div>', unsafe_allow_html=True)
     pmi = st.number_input("PMI Composito USA", min_value=20.0, max_value=80.0, value=float(st.session_state['pmi_composite']), step=0.1)
-    if st.button("🔄 Aggiorna Dati"): st.cache_data.clear(); st.rerun()
+    if st.button("🔄 Aggiorna Dati"): 
+        st.cache_data.clear()
+        st.rerun()
 
-with st.spinner("Caricamento dati FRED e mercati..."):
+with st.spinner("Sincronizzazione motori macro..."):
     fred_data = load_all_fred()
     mkt_data = load_market_data()
 
+# Calcolo score (assumendo che le funzioni di scoring siano definite sopra)
 sc_A, ind_A = score_pillar_monetary(fred_data)
 sc_B, ind_B = score_pillar_real_economy(fred_data, pmi)
 (sc_C, ind_C), (sc_D, ind_D) = score_pillar_fiscal_prod(fred_data)
 sc_E, ind_E = score_pillar_risk(mkt_data)
 
-composite = np.mean([sc_A, sc_B, sc_C, sc_D, sc_E])
-growth_score = np.mean([sc_B, sc_D])
-inflation_proxy = 100 - sc_A
-
-# Regime Logic
-if growth_score >= 50 and inflation_proxy < 50: reg_name, reg_col = "GOLDILOCKS", CYAN
-elif growth_score >= 50 and inflation_proxy >= 50: reg_name, reg_col = "INFLATIONARY BOOM", AMBER
-elif growth_score < 50 and inflation_proxy >= 50: reg_name, reg_col = "STAGFLATION", RED
-else: reg_name, reg_col = "DISINFLATIONARY BUST", BLUE
-
-# HEADER
+# Dashboard Header
 st.markdown('<div class="main-title">🧭 Macro Core Engine v2.0</div>', unsafe_allow_html=True)
-st.markdown(f'<div style="font-size:0.6rem;color:#7a9ab0;letter-spacing:2px;margin-bottom:16px;">Regime Corrente: <span style="color:{reg_col};font-weight:bold;">{reg_name}</span></div>', unsafe_allow_html=True)
 
-# TABS
+# Visualizzazione dei Tab
 tabs = st.tabs(["🧭 Overview", "💰 A: Monetario", "📈 B: Reale", "🏛️ C/D: Fiscale+Prod", "⚠️ E: Rischio & Stress"])
 
 with tabs[0]:
     c1, c2 = st.columns([2, 3])
     with c1:
+        # Calcolo Regime
+        growth_score = np.mean([sc_B, sc_D])
+        inflation_proxy = 100 - sc_A
+        if growth_score >= 50 and inflation_proxy < 50: reg_name, reg_col = "GOLDILOCKS", CYAN
+        elif growth_score >= 50 and inflation_proxy >= 50: reg_name, reg_col = "INFLATIONARY BOOM", AMBER
+        elif growth_score < 50 and inflation_proxy >= 50: reg_name, reg_col = "STAGFLATION", RED
+        else: reg_name, reg_col = "DISINFLATIONARY BUST", BLUE
+        
         st.markdown(f"""
-        <div style="background:#0a1a14;border:2px solid {reg_col};border-radius:8px;padding:24px;text-align:center;">
-          <div style="font-size:0.6rem;color:{MUTED};letter-spacing:2px">REGIME MACRO</div>
-          <div style="font-family:Syne;font-size:1.6rem;font-weight:800;color:{reg_col}">{reg_name}</div>
+        <div style="background:#0a1a14; border:2px solid {reg_col}; border-radius:8px; padding:24px; text-align:center;">
+          <div style="font-size:0.6rem; color:{MUTED}; letter-spacing:2px">REGIME MACRO CORRENTE</div>
+          <div style="font-family:Syne; font-size:1.8rem; font-weight:800; color:{reg_col}">{reg_name}</div>
         </div>
         """, unsafe_allow_html=True)
+    
     with c2:
+        # Grafico a barre riassuntivo (Corretto per evitare il crash del margin)
         fig_bars = go.Figure(go.Bar(
-            x=['A: Monetario', 'B: Reale', 'C: Fiscale', 'D: Produttivo', 'E: Rischio'],
+            x=['Monetario', 'Econ. Reale', 'Fiscale', 'Produttivo', 'Rischio'],
             y=[sc_A, sc_B, sc_C, sc_D, sc_E],
-            marker_color=[score_color(s) for s in [sc_A, sc_B, sc_C, sc_D, sc_E]]
+            marker_color=[score_color(s) for s in [sc_A, sc_B, sc_C, sc_D, sc_E]],
+            text=[f"{s:.0f}" for s in [sc_A, sc_B, sc_C, sc_D, sc_E]],
+            textposition='auto',
         ))
         fig_bars.add_hline(y=50, line_dash="dot", line_color=MUTED)
-        fig_bars.update_layout(**base_layout("Scores (0-100)", 200), margin=dict(t=30, b=0, l=30, r=10))
+        
+        # Uso base_layout passando il margine desiderato come unico argomento
+        custom_margin = dict(t=30, b=10, l=30, r=10)
+        fig_bars.update_layout(**base_layout("Scores per Pilastro (0-100)", 220, margin=custom_margin))
         st.plotly_chart(fig_bars, use_container_width=True, config={"displayModeBar": False})
 
-def render_pillar_tab(title, score, indicators, color_theme):
-    st.markdown(f'<div class="section-label">{title}</div>', unsafe_allow_html=True)
-    for name, data in indicators.items():
-        col1, col2 = st.columns([2, 1])
-        c = score_color(data['score'])
-        with col1:
-            st.markdown(f"""
-            <div style="background:#0a0f18;border:1px solid #1c2a3a;border-radius:4px;padding:12px;margin-bottom:10px;">
-              <div style="font-size:0.6rem;color:{MUTED};letter-spacing:2px">{name.upper()}</div>
-              <div style="font-family:Syne;font-size:1.2rem;color:{c};font-weight:700">{data['val']} {data['unit']}</div>
-              <div style="font-size:0.55rem;color:#4a6070">{data['desc']} · Score: {data['score']:.0f}/100</div>
-            </div>
-            """, unsafe_allow_html=True)
-        with col2:
-            st.markdown("<div style='margin-top:20px;'></div>", unsafe_allow_html=True)
-            render_sparkline(data['series'], c)
-
-with tabs[1]: render_pillar_tab("Pilastro A: Condizioni Monetarie", sc_A, ind_A, CYAN)
-with tabs[2]: render_pillar_tab("Pilastro B: Economia Reale", sc_B, ind_B, BLUE)
+with tabs[1]: render_pillar_tab("A: Condizioni Monetarie (M2, Yields)", sc_A, ind_A, CYAN)
+with tabs[2]: render_pillar_tab("B: Ciclo Economico Reale", sc_B, ind_B, BLUE)
 with tabs[3]: 
-    render_pillar_tab("Pilastro C: Politica Fiscale", sc_C, ind_C, AMBER)
-    render_pillar_tab("Pilastro D: Capacità Produttiva", sc_D, ind_D, AMBER)
-with tabs[4]: render_pillar_tab("Pilastro E: Rischio e Stress Sistemico", sc_E, ind_E, RED)
+    render_pillar_tab("C: Impulso Fiscale", sc_C, ind_C, AMBER)
+    render_pillar_tab("D: Capacità e Output", sc_D, ind_D, AMBER)
+with tabs[4]: render_pillar_tab("E: Stress di Mercato & Bond Vol", sc_E, ind_E, RED)
