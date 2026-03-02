@@ -257,9 +257,9 @@ def load_all_fred():
     data = {}
     # MONETARIO
     data["M2"]        = load_fred_series("M2SL", 20)
-    data["GDP"]       = load_fred_series("GDP", 20)        # nominale trimestrale
-    data["CPI"]       = load_fred_series("CPIAUCSL", 20)   # CPI
-    data["REALYIELD"] = load_fred_series("DFII10", 15)     # 10Y real yield
+    data["GDP"]       = load_fred_series("GDP", 20)
+    data["CPI"]       = load_fred_series("CPIAUCSL", 20)
+    data["REALYIELD"] = load_fred_series("DFII10", 15)
     data["HY_OAS"]    = load_fred_series("BAMLH0A0HYM2", 15)
     data["IG_OAS"]    = load_fred_series("BAMLC0A0CM", 15)
 
@@ -361,7 +361,6 @@ def compute_fiscal_impulse(deficit):
     if deficit.empty:
         return pd.Series(dtype=float)
     return deficit.diff(1)
-
 # =============================================================================
 # SCORING — 5 PILLARS
 # =============================================================================
@@ -492,7 +491,6 @@ def score_pillar_real_economy(data, pmi_manual):
         du = compute_unrate_3m_change(unrate).dropna()
         if not du.empty:
             last_val = float(du.iloc[-1])
-            # valori più negativi = migliori → invertiamo
             raw_score = percentile_score(du, last_val)
             score = 100 - raw_score
             scores.append(score)
@@ -518,7 +516,6 @@ def score_pillar_fiscal(data):
         impulse = compute_fiscal_impulse(deficit).dropna()
         if not impulse.empty:
             last_val = float(impulse.iloc[-1])
-            # impulso espansivo (deficit in aumento, più negativo) = bull breve → invert
             raw_score = percentile_score(impulse, last_val)
             score = 100 - raw_score
             scores.append(score)
@@ -540,7 +537,6 @@ def score_pillar_fiscal(data):
 
     if not debt_gdp.empty:
         last_val = float(debt_gdp.iloc[-1])
-        # debito alto = rischio LT → invert
         raw_score = percentile_score(debt_gdp, last_val)
         score = 100 - raw_score
         scores.append(score)
@@ -580,7 +576,7 @@ def score_pillar_productive(data):
         if not ulc_yoy.empty:
             last_val = float(ulc_yoy.iloc[-1])
             raw_score = percentile_score(ulc_yoy, last_val)
-            score = 100 - raw_score  # ULC alto = pressione costi
+            score = 100 - raw_score
             scores.append(score)
             indicators["Unit Labor Costs YoY"] = {
                 "value": round(last_val, 2),
@@ -618,7 +614,7 @@ def score_pillar_geopolitical(mkt_data):
     if oil is not None and len(oil) > 60:
         last_val = float(oil.iloc[-1])
         raw_score = percentile_score(oil, last_val)
-        score = 100 - raw_score  # oil alto = stress
+        score = 100 - raw_score
         scores.append(score)
         indicators["Oil (WTI)"] = {
             "value": round(last_val, 1),
@@ -643,7 +639,7 @@ def score_pillar_geopolitical(mkt_data):
     if move is not None and len(move) > 60:
         last_val = float(move.iloc[-1])
         raw_score = percentile_score(move, last_val)
-        score = 100 - raw_score  # MOVE alto = stress bond
+        score = 100 - raw_score
         scores.append(score)
         indicators["MOVE Index"] = {
             "value": round(last_val, 1),
@@ -798,15 +794,14 @@ with col_main:
         text=[f"{v:.0f}" for v in vals],
         textposition="outside"
     )
-    fig_bar.update_layout(
-        **base_layout("Score per pilastro (0–100)", height=320),
-        yaxis=dict(range=[0, 100], gridcolor=GRID_COL),
-    )
+    layout_bar = base_layout("Score per pilastro (0–100)", height=320)
+    layout_bar["yaxis"] = dict(range=[0, 100], gridcolor=GRID_COL)
+    fig_bar.update_layout(**layout_bar)
     st.plotly_chart(fig_bar, use_container_width=True)
 
     if show_monetary_z:
         st.markdown('<div class="section-label">Z-Score Panel — Monetario</div>', unsafe_allow_html=True)
-        # Pannello z-score monetario più leggibile
+
         m2 = data.get("M2", pd.Series())
         gdp = data.get("GDP", pd.Series())
         cpi = data.get("CPI", pd.Series())
@@ -817,7 +812,6 @@ with col_main:
         m2_real = compute_m2_real(m2, cpi)
         vel = compute_velocity(m2, gdp)
 
-        # Resample mensile e z-score ultimi 8 anni
         def prep_z(s):
             if s is None or s.empty:
                 return None
@@ -864,10 +858,9 @@ with col_main:
                         annotation_text="-1.5σ", annotation_position="bottom right",
                         annotation_font=dict(color=MUTED, size=9))
 
-        fig_z.update_layout(
-            **base_layout("Z-Score indicatori monetari (ultimi 8 anni)", height=360),
-            yaxis=dict(gridcolor=GRID_COL, zeroline=False, range=[-4, 4]),
-        )
+        layout_z = base_layout("Z-Score indicatori monetari (ultimi 8 anni)", height=360)
+        layout_z["yaxis"] = dict(gridcolor=GRID_COL, zeroline=False, range=[-4, 4])
+        fig_z.update_layout(**layout_z)
         st.plotly_chart(fig_z, use_container_width=True)
 
 with col_side:
