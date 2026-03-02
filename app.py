@@ -1040,6 +1040,236 @@ with tab1:
     )
     st.plotly_chart(fig_radar, use_container_width=True, config={"displayModeBar": False})
 
+    # ── SERIE STORICA COMPOSITE SCORE ────────────────────────────────────────
+    st.markdown('<div class="section-label">Serie Storica — Composite Score nel Tempo</div>', unsafe_allow_html=True)
+
+    @st.cache_data(ttl=3600*6)
+    def compute_historical_composite(window_months):
+        """
+        Ricostruisce il composite score mese per mese usando i dati FRED già caricati.
+        Usa le stesse serie del monitor live ma ricalcola su ogni punto storico.
+        """
+        try:
+            fred_loc = Fred(api_key=FRED_API_KEY)
+
+            # Carica tutte le serie necessarie
+            m2      = fred_loc.get_series("M2SL",         observation_start="2000-01-01").resample("M").last()
+            gdp     = fred_loc.get_series("GDP",          observation_start="2000-01-01").resample("M").last().ffill()
+            ry      = fred_loc.get_series("DFII10",       observation_start="2000-01-01").resample("M").last()
+            hy      = fred_loc.get_series("BAMLH0A0HYM2", observation_start="2000-01-01").resample("M").last()
+            indpro  = fred_loc.get_series("INDPRO",       observation_start="2000-01-01").resample("M").last()
+            unrate  = fred_loc.get_series("UNRATE",       observation_start="2000-01-01").resample("M").last()
+            tcu     = fred_loc.get_series("TCU",          observation_start="2000-01-01").resample("M").last()
+            deficit = fred_loc.get_series("FYFSGDA188S",  observation_start="2000-01-01").resample("M").last().ffill()
+
+            # Costruisci le serie derivate
+            idx_m2gdp = m2.index.intersection(gdp.index)
+            m2_gdp = m2[idx_m2gdp] / gdp[idx_m2gdp]
+
+            ip_yoy   = indpro.pct_change(12) * 100
+            ur_chg3  = unrate.diff(3)
+
+            # Allinea su indice comune
+            common = m2_gdp.index
+            for s in [ry, hy, ip_yoy, ur_chg3, tcu, deficit]:
+                common = common.intersection(s.index)
+            common = common.sort_values()
+
+            # Calcola z-score rolling per ogni serie
+            def rzs(series, w, inv=False):
+                idx = series.index.intersection(common)
+                s = series[idx]
+                mean = s.rolling(w, min_periods=w//2).mean()
+                std  = s.rolling(w, min_periods=w//2).std()
+                z    = (s - mean) / std
+                z_clipped = z.clip(-3, 3)
+                score = ((-z_clipped + 3) / 6 * 100) if inv else ((z_clipped + 3) / 6 * 100)
+                return score
+
+            s_m2gdp  = rzs(m2_gdp,  window_months, inv=False)
+            s_ry     = rzs(ry,      window_months, inv=True)
+            s_hy     = rzs(hy,      window_months, inv=True)
+            s_ip     = rzs(ip_yoy,  window_months, inv=False)
+            s_ur     = rzs(ur_chg3, window_months, inv=True)
+            s_tcu    = rzs(tcu,     window_months, inv=False)
+            s_def    = rzs(deficit, window_months, inv=False)
+
+            # Score per pilastro (semplificato, senza PMI/GPR manuali storici)
+            hist_A = (s_m2gdp + s_ry + s_hy) / 3
+            hist_B = (s_ip + s_ur) / 2
+            hist_C = s_def
+            hist_D = s_tcu
+            hist_E = pd.Series(50.0, index=common)  # geopolitico fisso a neutro senza GPR storico
+
+            # Composite
+            composite_hist = (
+                hist_A * 0.25 +
+                hist_B * 0.30 +
+                hist_C * 0.15 +
+                hist_D * 0.15 +
+                hist_E * 0.15
+            )
+
+            # Allinea tutto su common
+            result = pd.DataFrame({
+                "Composite":     composite_hist,
+                "Monetario":     hist_A,
+                "Econ. Reale":   hist_B,
+                "Fiscale":       hist_C,
+                "Produttivo":    hist_D,
+            }).dropna()
+
+            return result
+
+        except Exception as e:
+            return pd.DataFrame()
+
+    hist_df = compute_historical_composite(ZSCORE_WINDOW)
+
+    if not hist_df.empty:
+        # Taglia alla finestra display scelta dall'utente
+        cutoff_hist = pd.Timestamp.now() - pd.DateOffset(years=max(zscore_years * 3, 10))
+        hist_plot = hist_df[hist_df.index >= cutoff_hist].copy()
+
+        # Determina colore per ogni punto (regime cambio)
+        def _regime_color_point(c):
+            if c >= 60: return CYAN
+            if c >= 40: return AMBER
+            return RED
+
+        line_colors = [_regime_color_point(v) for v in hist_plot["Composite"]]
+
+        fig_hist = go.Figure()
+
+        # Bande regime
+        fig_hist.add_hrect(y0=60, y1=100, fillcolor=f"rgba(0,245,196,0.05)", line_width=0,
+                           annotation_text="BULL ZONE", annotation_position="top right",
+                           annotation_font=dict(color=CYAN, size=8))
+        fig_hist.add_hrect(y0=0, y1=40,  fillcolor=f"rgba(255,77,109,0.05)", line_width=0,
+                           annotation_text="BEAR ZONE", annotation_position="bottom right",
+                           annotation_font=dict(color=RED, size=8))
+
+        # Linee soglia
+        fig_hist.add_hline(y=60, line_dash="dot", line_color=CYAN, line_width=1.2,
+                           annotation_text="Bull 60", annotation_position="right",
+                           annotation_font=dict(color=CYAN, size=8))
+        fig_hist.add_hline(y=40, line_dash="dot", line_color=RED,  line_width=1.2,
+                           annotation_text="Bear 40", annotation_position="right",
+                           annotation_font=dict(color=RED, size=8))
+        fig_hist.add_hline(y=50, line_dash="solid", line_color=GRID_COL, line_width=0.8)
+
+        # Pilastri in background (sottili)
+        for col_name, col_color in [
+            ("Monetario",   BLUE),
+            ("Econ. Reale", CYAN),
+            ("Fiscale",     AMBER),
+            ("Produttivo",  "#bb88ff"),
+        ]:
+            if col_name in hist_plot.columns:
+                fig_hist.add_trace(go.Scatter(
+                    x=hist_plot.index,
+                    y=hist_plot[col_name],
+                    name=col_name,
+                    line=dict(color=col_color, width=0.8, dash="dot"),
+                    opacity=0.35,
+                    showlegend=True,
+                ))
+
+        # Composite principale — colorato per zona
+        fig_hist.add_trace(go.Scatter(
+            x=hist_plot.index,
+            y=hist_plot["Composite"],
+            name="Composite",
+            line=dict(color=TEXT_COL, width=2.5),
+            showlegend=True,
+        ))
+
+        # Marker colorato punto corrente
+        fig_hist.add_trace(go.Scatter(
+            x=[hist_plot.index[-1]],
+            y=[hist_plot["Composite"].iloc[-1]],
+            mode="markers+text",
+            marker=dict(size=12, color=_regime_color_point(composite),
+                        line=dict(color="white", width=2)),
+            text=[f"  {composite:.0f}"],
+            textfont=dict(color=_regime_color_point(composite), size=10, family="Syne"),
+            textposition="middle right",
+            name="Oggi",
+            showlegend=False,
+        ))
+
+        layout_hist = base_layout("Composite Score Storico · Linee tratteggiate = pilastri · Bianca = composito", 340)
+        layout_hist["yaxis"] = dict(range=[0, 100], gridcolor=GRID_COL, tickfont=dict(size=8))
+        fig_hist.update_layout(**layout_hist)
+
+        st.plotly_chart(fig_hist, use_container_width=True, config={"displayModeBar": False})
+
+        # ── ALERT CAMBIO REGIME ───────────────────────────────────────────────
+        if len(hist_plot) >= 2:
+            prev_score = hist_plot["Composite"].iloc[-2]
+            curr_score = hist_plot["Composite"].iloc[-1]
+
+            def _zone(s):
+                if s >= 60: return "BULL"
+                if s >= 40: return "NEUTRAL"
+                return "BEAR"
+
+            prev_zone = _zone(prev_score)
+            curr_zone = _zone(curr_score)
+
+            if prev_zone != curr_zone:
+                # CAMBIO REGIME — alert prominente
+                arrow = "📈" if curr_zone == "BULL" else ("⚠️" if curr_zone == "NEUTRAL" else "📉")
+                alert_col = CYAN if curr_zone == "BULL" else (AMBER if curr_zone == "NEUTRAL" else RED)
+                alert_bg  = "rgba(0,245,196,0.07)" if curr_zone == "BULL" else \
+                            ("rgba(245,166,35,0.07)" if curr_zone == "NEUTRAL" else "rgba(255,77,109,0.07)")
+                st.markdown(f"""
+                <div style="background:{alert_bg};border:2px solid {alert_col};border-radius:6px;
+                            padding:16px 20px;margin-top:8px">
+                  <div style="font-family:Syne;font-size:1.1rem;font-weight:800;color:{alert_col}">
+                    {arrow} CAMBIO DI ZONA RILEVATO
+                  </div>
+                  <div style="font-size:0.7rem;color:#c8d8e8;margin-top:6px;line-height:1.8">
+                    Il Composite Score è passato da <b style="color:#c8d8e8">{prev_zone}</b>
+                    ({prev_score:.0f}/100) a <b style="color:{alert_col}">{curr_zone}</b>
+                    ({curr_score:.0f}/100) nell'ultimo periodo disponibile.
+                  </div>
+                  <div style="font-size:0.6rem;color:#7a9ab0;margin-top:6px">
+                    ⚠️ Il composite storico non include PMI e GPR manuali (fissati a neutro) —
+                    il valore live può differire. Verifica nella tab Overview.
+                  </div>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                # Nessun cambio — mostra conferma zona stabile
+                stable_col = CYAN if curr_zone == "BULL" else (AMBER if curr_zone == "NEUTRAL" else RED)
+                # Conta quanti mesi consecutivi nella stessa zona
+                months_in_zone = 0
+                for v in reversed(hist_plot["Composite"].values):
+                    if _zone(v) == curr_zone:
+                        months_in_zone += 1
+                    else:
+                        break
+                st.markdown(f"""
+                <div style="background:#0e1420;border:1px solid {stable_col};border-radius:6px;
+                            padding:12px 18px;margin-top:8px;display:flex;align-items:center;gap:16px">
+                  <div style="font-family:Syne;font-size:1.5rem;font-weight:800;color:{stable_col}">
+                    {curr_zone}
+                  </div>
+                  <div>
+                    <div style="font-size:0.65rem;color:#c8d8e8;font-weight:700">
+                      Zona stabile · nessun cambio di regime
+                    </div>
+                    <div style="font-size:0.6rem;color:#7a9ab0;margin-top:3px">
+                      {months_in_zone} mesi consecutivi in zona {curr_zone} ·
+                      Composite corrente: {curr_score:.0f}/100
+                    </div>
+                  </div>
+                </div>
+                """, unsafe_allow_html=True)
+    else:
+        st.info("⏳ Serie storica non disponibile — controlla la connessione FRED.")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 2 · MONETARIO
