@@ -210,6 +210,25 @@ def fmt(v, dec=2, suffix=""):
 def cutoff_date(years):
     return pd.Timestamp.now() - pd.DateOffset(years=years)
 
+def safe_ts(s):
+    """Garantisce DatetimeIndex. Se impossibile, ritorna Series vuota."""
+    if s is None or (isinstance(s, pd.Series) and s.empty):
+        return pd.Series(dtype=float)
+    if not isinstance(s.index, pd.DatetimeIndex):
+        try:
+            s = s.copy()
+            s.index = pd.to_datetime(s.index)
+        except Exception:
+            return pd.Series(dtype=float)
+    return s
+
+def fbd(s, cut):
+    """Filter by date — sicuro contro RangeIndex e None."""
+    s = safe_ts(s)
+    if s.empty:
+        return s
+    return fbd(s, cut)
+
 # ============================================================================
 # FRED CLIENT
 # ============================================================================
@@ -751,7 +770,7 @@ with tab1:
     hist = build_historical_composite()
 
     if not hist.empty:
-        h = hist[hist.index >= cutoff_date(max(years_display, 5))].copy()
+        h = fbd(hist, cutoff_date(max(years_display, 5))).copy()
         fig_h = go.Figure()
         fig_h.add_hrect(y0=60, y1=100, fillcolor="rgba(198,255,26,0.04)", line_width=0,
                         annotation_text="BULL ZONE", annotation_position="top right",
@@ -894,7 +913,7 @@ with tab2:
             (mr_s,  2, BLUE,    "M2 Real"),
             (vel_s, 3, MAGENTA, "Velocity"),
         ]:
-            sc2 = s[s.index >= cut].dropna()
+            sc2 = fbd(s, cut)
             if not sc2.empty:
                 fig_m2.add_trace(go.Scatter(x=sc2.index, y=sc2.values,
                     line=dict(color=col_hex, width=1.8), name=name), row=row, col=1)
@@ -915,7 +934,7 @@ with tab2:
             subplot_titles=("Real Yield 10Y (%)", "HY OAS Spread (bp)"),
             vertical_spacing=0.08)
         for s, row, col_hex in [(ry_s, 1, ORANGE), (hy_s, 2, RED)]:
-            sc2 = s[s.index >= cut].dropna()
+            sc2 = fbd(s, cut)
             if not sc2.empty:
                 fig_ry.add_trace(go.Scatter(x=sc2.index, y=sc2.values,
                     line=dict(color=col_hex, width=1.8), showlegend=False), row=row, col=1)
@@ -968,7 +987,7 @@ with tab3:
             (nfp3,    2, 1, LIME,   "NFP D3M", True),
             (pce_yoy, 2, 2, ORANGE, "PCE YoY", False),
         ]:
-            sc2 = s[s.index >= cut].dropna()
+            sc2 = fbd(s, cut)
             if not sc2.empty:
                 if use_bar:
                     bc = [LIME if v > 0 else RED for v in sc2.values]
@@ -1003,10 +1022,10 @@ with tab4:
         st.markdown(tile_html("SCORE PILASTRO C", f"{sC:.0f}/100",
                                "Fiscale", score_cc(sC), score_pill(sC)),
                     unsafe_allow_html=True)
-        def_s  = fred_data["DEFICIT"][fred_data["DEFICIT"].index >= cut]
+        def_s  = fbd(fred_data["DEFICIT"], cut)
         imp_s  = fred_data["DEFICIT"].diff(1).dropna()
-        imp_s  = imp_s[imp_s.index >= cut]
-        debt_s = fred_data["DEBT_GDP"][fred_data["DEBT_GDP"].index >= cut]
+        imp_s  = fbd(imp_s, cut)
+        debt_s = fbd(fred_data["DEBT_GDP"], cut)
 
         fig_fis = make_subplots(rows=3, cols=1, shared_xaxes=True,
             subplot_titles=("Deficit/PIL %", "Impulso Fiscale", "Debito/PIL %"),
@@ -1036,13 +1055,13 @@ with tab4:
         st.markdown(tile_html("SCORE PILASTRO D", f"{sD:.0f}/100",
                                "Produttivo", score_cc(sD), score_pill(sD)),
                     unsafe_allow_html=True)
-        tcu_s   = fred_data["TCU"][fred_data["TCU"].index >= cut]
+        tcu_s   = fbd(fred_data["TCU"], cut)
         ulc_yoy = yoy(fred_data["ULC"], 4).resample("Q").last()
-        ulc_s   = ulc_yoy[ulc_yoy.index >= cut]
+        ulc_s   = fbd(ulc_yoy, cut)
         gap_s   = output_gap_proxy(fred_data["INDPRO"].resample("M").last())
-        gap_s   = gap_s[gap_s.index >= cut]
+        gap_s   = fbd(gap_s, cut)
         prod_y  = yoy(fred_data["PRODUC"], 4).resample("Q").last()
-        prod_s  = prod_y[prod_y.index >= cut]
+        prod_s  = fbd(prod_y, cut)
 
         fig_pro = make_subplots(rows=4, cols=1, shared_xaxes=True,
             subplot_titles=("Capacity Util. %", "ULC YoY %",
@@ -1126,7 +1145,7 @@ with tab5:
             (dxy,  2, 2, TEXT_COL, "DXY"),
         ]:
             if s is not None and not s.empty:
-                sc2 = s[s.index >= cut].dropna()
+                sc2 = fbd(s, cut)
                 if not sc2.empty:
                     fig_geo.add_trace(go.Scatter(x=sc2.index, y=sc2.values,
                         line=dict(color=col_hex, width=1.8), name=name), row=row, col=col)
@@ -1137,7 +1156,7 @@ with tab5:
         st.plotly_chart(fig_geo, use_container_width=True, config={"displayModeBar": False})
 
         if gold is not None and not gold.empty:
-            gc = gold[gold.index >= cut].dropna()
+            gc = fbd(gold, cut)
             if not gc.empty:
                 fig_gold = go.Figure()
                 fig_gold.add_trace(go.Scatter(x=gc.index, y=gc.values,
