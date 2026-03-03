@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 import plotly.graph_objects as go
-from pandas_datareader import data as pdr
+from pandas_datareader
 from pandas_datareader.fred import FredReader
 from datetime import datetime
 import os
