@@ -30,15 +30,7 @@ st.markdown(
 # FRED API HANDLING
 # ==========================================================
 
-def get_fred_key():
-    try:
-        return st.secrets["938a76ed726e8351f43e1b0c36365784"]
-    except Exception:
-        st.error("FRED API Key missing. Add it to secrets.toml")
-        st.stop()
-
-FRED_KEY = get_fred_key()
-
+FRED_KEY = "938a76ed726e8351f43e1b0c36365784"
 # ==========================================================
 # SAFE DATA LOADING
 # ==========================================================
