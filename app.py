@@ -227,7 +227,7 @@ def fbd(s, cut):
     s = safe_ts(s)
     if s.empty:
         return s
-    return fbd(s, cut)
+    return s[s.index >= cut].dropna()
 
 # ============================================================================
 # FRED CLIENT
