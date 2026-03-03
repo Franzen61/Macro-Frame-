@@ -1,11 +1,13 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import yfinance as yf
 import plotly.graph_objects as go
-from pandas_datareader
-from pandas_datareader.fred import FredReader
-from datetime import datetime
+from plotly.subplots import make_subplots
+from fredapi import Fred
+import yfinance as yf
+from datetime import datetime, timedelta
+import warnings
+warnings.filterwarnings("ignore")
 import os
 
 # ==========================================================
@@ -30,7 +32,7 @@ st.markdown(
 
 def get_fred_key():
     try:
-        return st.secrets["FRED_API_KEY"]
+        return st.secrets["938a76ed726e8351f43e1b0c36365784"]
     except Exception:
         st.error("FRED API Key missing. Add it to secrets.toml")
         st.stop()
