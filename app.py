@@ -136,22 +136,27 @@ series_dict = {
     "Stress": stlfsi
 }
 
-df = pd.DataFrame()
+df_list = []
 
 for name, data in series_dict.items():
     if not data.empty:
-        df[name] = data.squeeze()
+        s = data.copy()
+        s.columns = [name]
+        s.index = pd.to_datetime(s.index)
+        df_list.append(s)
 
+if len(df_list) == 0:
+    st.error("No data loaded from FRED.")
+    st.stop()
+
+df = pd.concat(df_list, axis=1)
+
+# Garantiamo indice datetime ordinato
+df.index = pd.to_datetime(df.index)
+df = df.sort_index()
+
+# Ora resample è sicuro
 df = df.resample("M").last()
-
-df = df.resample("M").last()
-
-# MOVE
-move = move.resample("M").last()
-df["MOVE"] = move
-
-df = df.dropna(how="all")
-
 # ==========================================================
 # DERIVED METRICS
 # ==========================================================
