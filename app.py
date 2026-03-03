@@ -124,29 +124,25 @@ with st.spinner("Downloading macro data..."):
 # DATA PREP
 # ==========================================================
 
-df = pd.concat([
-    ism_mfg,
-    ism_srv,
-    real_10y,
-    hy_spread,
-    m2,
-    cpi,
-    gdp,
-    deficit,
-    stlfsi
-], axis=1)
+series_dict = {
+    "ISM_MFG": ism_mfg,
+    "ISM_SRV": ism_srv,
+    "Real10Y": real_10y,
+    "HY": hy_spread,
+    "M2": m2,
+    "CPI": cpi,
+    "GDP": gdp,
+    "Deficit": deficit,
+    "Stress": stlfsi
+}
 
-df.columns = [
-    "ISM_MFG",
-    "ISM_SRV",
-    "Real10Y",
-    "HY",
-    "M2",
-    "CPI",
-    "GDP",
-    "Deficit",
-    "Stress"
-]
+df = pd.DataFrame()
+
+for name, data in series_dict.items():
+    if not data.empty:
+        df[name] = data.squeeze()
+
+df = df.resample("M").last()
 
 df = df.resample("M").last()
 
