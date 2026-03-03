@@ -1,8 +1,19 @@
 """
-MACRO CORE ENGINE v1.4
-======================
+MACRO CORE ENGINE v1.4.1
+========================
 5-Pillar Macro Regime Monitor
 Companion: Settoriale · Commodity Supercycle · Bond Monitor · Equity Pulse
+
+v1.4.1 — patch:
+  - MOVE Index spostato da Geopolitico → Monetario (misura vol tassi, non geo)
+  - GPR Index (Caldara & Iacoviello) integrato nel Pilastro E Geopolitico
+    · GPRH storico 1900-oggi con marker eventi storici
+    · GPR recente dal 1985
+    · Sub-componenti: GPRHT (threats) vs GPRHA (acts)
+    · Subplot GPR "sottopancia" al Composite Score in Tab1
+  - File uploader CSV GPR in sidebar (aggiornamento periodico manuale)
+  - DXY lookback esteso a 30Y (fix sovrastima stress da DXY)
+  - PMI summary card mostra valore numerico (bug fix)
 
 v1.4 — fix + upgrade:
   BUG FIX:
@@ -166,6 +177,68 @@ PURPLE   = "#bb88ff"
 FRED_API_KEY = "938a76ed726e8351f43e1b0c36365784"
 
 # ============================================================================
+# GPR EVENTS DICTIONARY (Caldara & Iacoviello — etichette storiche 1900-2017)
+# Usato come overlay marker sul grafico GPRH
+# Integrato con eventi 2020-2026 aggiunti manualmente
+# ============================================================================
+GPR_EVENTS = {
+    # Pre-WWII
+    "1900-07": "Boxer Rebellion",
+    "1904-02": "Russia-Jap War",
+    "1914-08": "WWI Begins",
+    "1939-09": "WWII Begins",
+    "1941-12": "Pearl Harbor",
+    "1944-06": "D-Day",
+    # Cold War
+    "1950-07": "Korean War",
+    "1956-11": "Suez Crisis",
+    "1962-10": "Cuban Missile",
+    "1973-10": "Yom Kippur",
+    "1980-01": "USSR→Afghan.",
+    "1982-04": "Falklands",
+    # Post-Cold War
+    "1990-08": "Iraq→Kuwait",
+    "1991-01": "Gulf War",
+    "2001-09": "September 11",
+    "2003-03": "Iraq War",
+    "2011-02": "Arab Spring",
+    "2014-03": "Crimea",
+    "2015-11": "Paris Attacks",
+    "2017-08": "US-Korea",
+    # Post-2020 (aggiunti manualmente)
+    "2020-03": "COVID-19",
+    "2022-02": "Russia→Ukraine",
+    "2023-10": "Gaza War",
+    "2024-04": "Iran→Israel",
+    "2025-01": "Trump 2.0",
+}
+
+# ============================================================================
+# GPR DATA LOADER
+# ============================================================================
+def load_gpr_data(uploaded_file=None):
+    """
+    Carica il CSV del GPR Index.
+    Se viene passato un file caricato via st.file_uploader, usa quello.
+    Altrimenti torna None (grafico non disponibile).
+    """
+    try:
+        if uploaded_file is not None:
+            df = pd.read_csv(uploaded_file, sep=",", low_memory=False)
+        else:
+            return None
+
+        df["month"] = pd.to_datetime(df["month"])
+        df = df.sort_values("month")
+        # Droppa artefatto Excel row 0 (1899)
+        df = df[df["month"].dt.year >= 1900].reset_index(drop=True)
+
+        cols = [c for c in ["month","GPR","GPRT","GPRA","GPRH","GPRHT","GPRHA"] if c in df.columns]
+        return df[cols].copy()
+    except Exception:
+        return None
+
+# ============================================================================
 # HELPERS
 # ============================================================================
 def base_layout(title="", height=320):
@@ -303,12 +376,18 @@ def load_market_data():
     result = {}
     tickers = {
         "OIL": "CL=F", "EEM": "EEM", "MOVE": "^MOVE",
-        "GOLD": "GC=F", "DXY": "DX-Y.NYB",
+        "GOLD": "GC=F",
+        "DXY": "DX-Y.NYB",  # v1.4.1: scaricato con 30Y per lookback corretto
         "SPY": "SPY", "TLT": "TLT", "GLD": "GLD", "GSG": "GSG",
+    }
+    periods = {
+        "DXY": "30y",   # v1.4.1: esteso da 20Y a 30Y
+        "MOVE": "25y",
     }
     for name, ticker in tickers.items():
         try:
-            df = yf.download(ticker, period="25y", progress=False, auto_adjust=True)
+            period = periods.get(name, "25y")
+            df = yf.download(ticker, period=period, progress=False, auto_adjust=True)
             if not df.empty:
                 result[name] = df["Close"].squeeze().dropna()
         except Exception:
@@ -369,6 +448,7 @@ INDICATOR_META = {
     "Real Yield 10Y":      "L",
     "HY OAS Spread":       "L",
     "Stress Finanziario":  "L",
+    "MOVE Index":          "L",   # v1.4.1: spostato in Monetario
     "PMI Composito":       "L",
     "INDPRO YoY":          "LAG",
     "Disoccupazione D3M":  "LAG",
@@ -382,7 +462,7 @@ INDICATOR_META = {
     "Produttivita' YoY":   "LAG",
     "Oil (WTI)":           "L",
     "EEM 3M":              "L",
-    "MOVE Index":          "L",
+    "GPR Index":           "L",   # v1.4.1: nuovo
     "DXY":                 "L",
 }
 
@@ -434,6 +514,17 @@ def score_monetary(d):
         ind["Stress Finanziario"] = {"value": fmt(float(stlfsi.iloc[-1]), 2), "score": s,
                                       "series": stlfsi, "unit": "idx",
                                       "desc": "STLFSI · neg = nessuno stress · pos = stress elevato"}
+
+    # v1.4.1: MOVE Index spostato da Geopolitico → Monetario
+    # Misura volatilità implicita dei Treasury USA → è un indicatore monetario, non geopolitico
+    move = d.get("MOVE")
+    if move is not None and not (isinstance(move, pd.Series) and move.empty) and len(move) > 60:
+        move_m = move.resample("M").last() if isinstance(move.index, pd.DatetimeIndex) else move
+        s = pct_score(move_m, invert=True)
+        scores.append(s)
+        ind["MOVE Index"] = {"value": fmt(float(move.iloc[-1]), 1), "score": s,
+                              "series": move_m, "unit": "idx",
+                              "desc": "Bond vol implicita Treasury · basso = stabilita' tassi"}
 
     return round(float(np.mean(scores)) if scores else 50.0, 1), ind
 
@@ -538,7 +629,7 @@ def score_productive(d):
     return round(float(np.mean(scores)) if scores else 50.0, 1), ind
 
 
-def score_geopolitical(mkt):
+def score_geopolitical(mkt, gpr_df=None):
     ind, scores = {}, []
     oil = mkt.get("OIL")
     if oil is not None and len(oil) > 60:
@@ -553,18 +644,25 @@ def score_geopolitical(mkt):
         scores.append(s)
         ind["EEM 3M"] = {"value": fmt(eem_3m, 1), "score": round(s, 1),
                           "series": eem, "unit": "%", "desc": "ETF EM 3 mesi · positivo = risk appetite"}
-    move = mkt.get("MOVE")
-    if move is not None and len(move) > 60:
-        s = pct_score(move, invert=True)
-        scores.append(s)
-        ind["MOVE Index"] = {"value": fmt(float(move.iloc[-1]), 1), "score": s,
-                              "series": move, "unit": "idx", "desc": "Bond vol globale · basso = stabilita'"}
+    # MOVE rimosso → spostato in Pilastro A Monetario (v1.4.1)
     dxy = mkt.get("DXY")
     if dxy is not None and len(dxy) > 60:
+        # v1.4.1: lookback 30Y per DXY (20Y sovrastimava stress da dollaro)
         s = pct_score(dxy, invert=True)
         scores.append(s)
         ind["DXY"] = {"value": fmt(float(dxy.iloc[-1]), 1), "score": s,
-                       "series": dxy, "unit": "", "desc": "Dollar Index · alto = stress EM"}
+                       "series": dxy, "unit": "", "desc": "Dollar Index · lookback 30Y · alto = stress EM"}
+    # v1.4.1: GPR Index (Caldara & Iacoviello) — score solo se dati disponibili
+    if gpr_df is not None and not gpr_df.empty:
+        gpr_col = "GPR" if gpr_df["GPR"].notna().sum() > 50 else "GPRH"
+        gpr_s   = gpr_df.set_index("month")[gpr_col].dropna()
+        if len(gpr_s) > 20:
+            s = pct_score(gpr_s, invert=True)
+            scores.append(s)
+            last_val = float(gpr_s.iloc[-1])
+            ind["GPR Index"] = {"value": fmt(last_val, 1), "score": s,
+                                 "series": gpr_s, "unit": "idx",
+                                 "desc": f"Geopolitical Risk Index · basso = rischio contenuto · ({gpr_col})"}
     return round(float(np.mean(scores)) if scores else 50.0, 1), ind
 
 
@@ -711,7 +809,7 @@ with st.sidebar:
         '🧭 MACRO CORE ENGINE</div>', unsafe_allow_html=True)
     st.markdown(
         '<div style="font-size:0.58rem;letter-spacing:3px;color:#4a6070;'
-        'text-transform:uppercase;margin-bottom:14px">v1.4 · Regime Monitor</div>',
+        'text-transform:uppercase;margin-bottom:14px">v1.4.1 · Regime Monitor</div>',
         unsafe_allow_html=True)
 
     st.markdown('<div class="sidebar-section">📊 PMI Composito</div>', unsafe_allow_html=True)
@@ -721,6 +819,33 @@ with st.sidebar:
         help=">52 espansione, <48 contrazione, 50=neutro",
         disabled=not pmi_override_active)
     pmi_manual = pmi_slider if pmi_override_active else None
+
+    # ── GPR FILE UPLOADER ──────────────────────────────────────────────────
+    st.markdown('<div class="sidebar-section">🌍 GPR Index — Aggiornamento</div>',
+        unsafe_allow_html=True)
+    st.markdown(
+        f'<div style="font-size:0.55rem;color:{MUTED};line-height:1.7;margin-bottom:6px">'
+        'Carica il CSV aggiornato da<br>'
+        '<b style="color:#8b9bb0">matteoiacoviello.com/gpr.htm</b><br>'
+        'Formato: CSV virgola, colonne GPR/GPRH/GPRHT/GPRHA<br>'
+        'Aggiornamento: mensile (~ giorno 10)</div>',
+        unsafe_allow_html=True)
+    gpr_uploaded = st.file_uploader(
+        "CSV GPR Index",
+        type=["csv"],
+        help="Scarica il file mensile da matteoiacoviello.com e caricalo qui",
+        label_visibility="collapsed",
+    )
+    if gpr_uploaded:
+        st.markdown(
+            f'<div style="font-size:0.58rem;color:{CYAN};margin-top:4px">'
+            f'✓ File caricato: {gpr_uploaded.name}</div>',
+            unsafe_allow_html=True)
+    else:
+        st.markdown(
+            f'<div style="font-size:0.55rem;color:{MUTED};margin-top:2px">'
+            'Nessun file — grafico GPR non disponibile</div>',
+            unsafe_allow_html=True)
 
     st.markdown('<div class="sidebar-section">⚙️ Impostazioni</div>', unsafe_allow_html=True)
     years_display = st.selectbox("Finestra grafici (anni)", [5, 10, 15, 20], index=1)
@@ -737,7 +862,7 @@ with st.sidebar:
         'TCU, ULC, PRODUC, Deficit, Debito<br>'
         '<b style="color:#8b9bb0">Auto yfinance:</b> Oil, EEM, MOVE, Gold, DXY<br>'
         '<b style="color:#8b9bb0">Backtest:</b> SPY, TLT, GLD, GSG<br>'
-        '<b style="color:#8b9bb0">Manuale:</b> PMI (opzionale override)</div>',
+        '<b style="color:#8b9bb0">Manuale:</b> PMI (override) · GPR CSV (mensile)</div>',
         unsafe_allow_html=True)
 
 # ============================================================================
@@ -746,12 +871,16 @@ with st.sidebar:
 with st.spinner("Caricamento dati FRED + mercati..."):
     fred_data = load_all_fred()
     mkt_data  = load_market_data()
+    gpr_df    = load_gpr_data(gpr_uploaded)
+
+# v1.4.1: inietta MOVE in fred_data per score_monetary
+fred_data["MOVE"] = mkt_data.get("MOVE", pd.Series(dtype=float))
 
 sA, indA           = score_monetary(fred_data)
 sB, indB, pmi_src  = score_real_economy(fred_data, pmi_manual)
 sC, indC           = score_fiscal(fred_data)
 sD, indD           = score_productive(fred_data)
-sE, indE           = score_geopolitical(mkt_data)
+sE, indE           = score_geopolitical(mkt_data, gpr_df)
 
 pillar_scores = {"A · Monetario": sA, "B · Econ. Reale": sB,
                  "C · Fiscale": sC, "D · Produttivo": sD, "E · Geopolitico": sE}
@@ -818,10 +947,18 @@ with tab1:
             </div>""", unsafe_allow_html=True)
 
     with rc3:
+        pmi_val_display = indB.get("PMI Composito", {}).get("value", "N/A")
+        try:
+            pv = float(pmi_val_display)
+            pmi_col_rc3 = CYAN if pv > 52 else (RED if pv < 48 else ORANGE)
+            pmi_display_rc3 = f"{pv:.1f} ({pmi_src[:4]})"
+        except Exception:
+            pmi_col_rc3 = MUTED
+            pmi_display_rc3 = f"N/A ({pmi_src[:4]})"
         for label, val, col in [
-            ("Macro Breadth",     f"{breadth:.0f}%",   BLUE),
-            ("Regime Confidence", f"{confidence:.1f}", MAGENTA),
-            ("PMI / fonte",       f"(auto)", CYAN),
+            ("Macro Breadth",     f"{breadth:.0f}%",      BLUE),
+            ("Regime Confidence", f"{confidence:.1f}",    MAGENTA),
+            ("PMI / fonte",       pmi_display_rc3,        pmi_col_rc3),
         ]:
             st.markdown(f"""<div class="summary-cell">
               <div class="summary-cell-label">{label}</div>
@@ -1014,7 +1151,45 @@ with tab1:
     else:
         st.info("Serie storica non disponibile.")
 
-    # Tabella in expander
+    # ── GPR SUBPLOT SOTTOPANCIA ────────────────────────────────────────────
+    if gpr_df is not None and not gpr_df.empty:
+        st.markdown('<div class="section-label">GPR Index — Geopolitical Risk (sottopancia)</div>',
+            unsafe_allow_html=True)
+        gpr_col_use = "GPR" if gpr_df["GPR"].notna().sum() > 50 else "GPRH"
+        gpr_plot = gpr_df.set_index("month")[gpr_col_use].dropna()
+        gpr_cut  = gpr_plot[gpr_plot.index >= cutoff_date(max(years_display, 10))]
+
+        fig_gpr_sub = go.Figure()
+        # Zona stress (>150)
+        fig_gpr_sub.add_hrect(y0=150, y1=gpr_plot.max()*1.1,
+            fillcolor="rgba(255,77,109,0.06)", line_width=0)
+        fig_gpr_sub.add_hline(y=100, line_dash="dot", line_color=MUTED, line_width=1,
+            annotation_text="Media storica 100", annotation_position="right",
+            annotation_font=dict(color=MUTED, size=8))
+        fig_gpr_sub.add_trace(go.Scatter(
+            x=gpr_cut.index, y=gpr_cut, name=gpr_col_use,
+            line=dict(color=ORANGE, width=1.5),
+            fill="tozeroy", fillcolor="rgba(245,166,35,0.06)"))
+
+        # Marker eventi nel range visualizzato
+        for ym, label in GPR_EVENTS.items():
+            try:
+                ev_date = pd.Timestamp(ym + "-01")
+                if ev_date >= gpr_cut.index.min() and ev_date <= gpr_cut.index.max():
+                    fig_gpr_sub.add_vline(x=ev_date, line_dash="dot",
+                        line_color=RED, line_width=0.8,
+                        annotation_text=label,
+                        annotation_position="top",
+                        annotation_font=dict(size=7, color=RED),
+                        annotation_textangle=-90)
+            except Exception:
+                pass
+
+        lg = base_layout(f"GPR Index ({gpr_col_use}) — eventi geopolitici rilevanti", 200)
+        lg["yaxis"] = dict(gridcolor=GRID_COL, tickfont=dict(size=8, color=MUTED))
+        lg["showlegend"] = False
+        fig_gpr_sub.update_layout(**lg)
+        st.plotly_chart(fig_gpr_sub, use_container_width=True, config={"displayModeBar": False})
     with st.expander("📋 Dettaglio Score — tutti gli indicatori", expanded=False):
         rows_html = ""
         for pillar_name, pcol, ind_dict in [
@@ -1139,6 +1314,19 @@ with tab2:
                 fillcolor="rgba(255,43,212,0.07)", name="STLFSI"))
             fig.update_layout(**base_layout(
                 "St. Louis Financial Stress Index (STLFSI)  neg = nessuno stress  pos = stress elevato", 220))
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+        # MOVE INDEX — v1.4.1: spostato da Geopolitico → Monetario
+        move = mkt_data.get("MOVE")
+        if move is not None and not move.empty:
+            move_d = fbd(move, cut)
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=move_d.index, y=move_d,
+                line=dict(color=PURPLE, width=2), fill="tozeroy",
+                fillcolor="rgba(187,136,255,0.07)", name="MOVE"))
+            add_percentile_bands(fig, move)
+            fig.update_layout(**base_layout(
+                "MOVE Index — Bond Vol implicita Treasury (v1.4.1: da Geo → Monetario)", 230))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
         # M2/PIL
@@ -1361,59 +1549,162 @@ with tab5:
                 idata["value"] + " " + idata["unit"],
                 "Score: " + str(round(sc)) + "/100 · " + idata["desc"],
                 score_cc(sc), score_pill(sc)), unsafe_allow_html=True)
+        # Nota spostamento MOVE
+        st.markdown(
+            f'<div style="font-size:0.55rem;color:{MUTED};border:1px solid {GRID_COL};'
+            f'border-radius:4px;padding:8px 10px;margin-top:8px;line-height:1.6">'
+            f'<b style="color:{ORANGE}">v1.4.1</b> MOVE Index spostato nel<br>'
+            f'Pilastro A Monetario — misura<br>volatilità tassi, non rischio geo.</div>',
+            unsafe_allow_html=True)
 
     with t5c2:
         cut = cutoff_date(years_display)
+
+        # ── GPR INDEX — GRAFICO PRINCIPALE CON EVENTI ──────────────────────
+        if gpr_df is not None and not gpr_df.empty:
+            st.markdown('<div class="section-label">GPR Index — Geopolitical Risk (Caldara & Iacoviello)</div>',
+                unsafe_allow_html=True)
+
+            # Costruisci figura con due tracce: GPRH (storico) + GPR (recente)
+            fig_gpr = make_subplots(rows=2, cols=1, row_heights=[0.7, 0.3],
+                shared_xaxes=True, vertical_spacing=0.04)
+
+            gpr_h = gpr_df.set_index("month")["GPRH"].dropna()
+            gpr_h_cut = fbd(gpr_h, cutoff_date(max(years_display, 5)))
+
+            # Sotto-componenti se disponibili
+            if "GPRHT" in gpr_df.columns:
+                gpr_ht = gpr_df.set_index("month")["GPRHT"].dropna()
+                gpr_ht_cut = fbd(gpr_ht, cutoff_date(max(years_display, 5)))
+                fig_gpr.add_trace(go.Scatter(x=gpr_ht_cut.index, y=gpr_ht_cut,
+                    name="Threats", line=dict(color=ORANGE, width=1, dash="dot"),
+                    opacity=0.6), row=1, col=1)
+            if "GPRHA" in gpr_df.columns:
+                gpr_ha = gpr_df.set_index("month")["GPRHA"].dropna()
+                gpr_ha_cut = fbd(gpr_ha, cutoff_date(max(years_display, 5)))
+                fig_gpr.add_trace(go.Scatter(x=gpr_ha_cut.index, y=gpr_ha_cut,
+                    name="Acts", line=dict(color=RED, width=1, dash="dot"),
+                    opacity=0.6), row=1, col=1)
+
+            # Traccia principale GPRH
+            fig_gpr.add_trace(go.Scatter(x=gpr_h_cut.index, y=gpr_h_cut,
+                name="GPRH", line=dict(color=CYAN, width=2),
+                fill="tozeroy", fillcolor="rgba(0,245,196,0.05)"), row=1, col=1)
+
+            # Linea media storica
+            fig_gpr.add_hline(y=100, line_dash="dot", line_color=MUTED,
+                line_width=1, row=1, col=1,
+                annotation_text="Media 100", annotation_position="right",
+                annotation_font=dict(color=MUTED, size=8))
+
+            # Marker eventi verticali
+            ev_added = []
+            for ym, label in GPR_EVENTS.items():
+                try:
+                    ev_date = pd.Timestamp(ym + "-01")
+                    if ev_date >= gpr_h_cut.index.min() and ev_date <= gpr_h_cut.index.max():
+                        if label not in ev_added:
+                            fig_gpr.add_vline(x=ev_date, line_dash="dot",
+                                line_color="rgba(255,77,109,0.5)", line_width=1,
+                                row=1, col=1)
+                            fig_gpr.add_annotation(
+                                x=ev_date, y=gpr_h_cut.max() * 0.98,
+                                text=label, showarrow=False,
+                                font=dict(size=6.5, color=RED),
+                                textangle=-90, xanchor="left",
+                                row=1, col=1)
+                            ev_added.append(label)
+                except Exception:
+                    pass
+
+            # Secondo subplot: GPR recente (post 1985) se disponibile
+            if "GPR" in gpr_df.columns and gpr_df["GPR"].notna().sum() > 20:
+                gpr_r = gpr_df.set_index("month")["GPR"].dropna()
+                gpr_r_cut = fbd(gpr_r, cutoff_date(max(years_display, 5)))
+                if not gpr_r_cut.empty:
+                    fig_gpr.add_trace(go.Bar(x=gpr_r_cut.index, y=gpr_r_cut,
+                        name="GPR recente", marker_color=MAGENTA,
+                        opacity=0.5), row=2, col=1)
+                    fig_gpr.add_hline(y=100, line_dash="dot", line_color=MUTED,
+                        line_width=1, row=2, col=1)
+
+            fig_gpr.update_layout(
+                height=440, paper_bgcolor=PAPER_BG, plot_bgcolor=PLOT_BG,
+                font=dict(family="Space Mono", color=TEXT_COL, size=9),
+                margin=dict(l=52, r=80, t=30, b=30),
+                hovermode="x unified",
+                legend=dict(orientation="h", y=-0.08, x=0.5, xanchor="center",
+                    font=dict(size=8, color=TEXT_COL), bgcolor="rgba(0,0,0,0)"),
+                xaxis=dict(gridcolor=GRID_COL, tickfont=dict(size=8, color=MUTED)),
+                xaxis2=dict(gridcolor=GRID_COL, tickfont=dict(size=8, color=MUTED)),
+                yaxis=dict(gridcolor=GRID_COL, tickfont=dict(size=8, color=MUTED),
+                    title=dict(text="GPRH", font=dict(size=8, color=MUTED))),
+                yaxis2=dict(gridcolor=GRID_COL, tickfont=dict(size=8, color=MUTED),
+                    title=dict(text="GPR", font=dict(size=8, color=MUTED))),
+            )
+            st.plotly_chart(fig_gpr, use_container_width=True, config={"displayModeBar": False})
+
+            # Info ultimo valore
+            last_gpr  = float(gpr_df.set_index("month")["GPRH"].dropna().iloc[-1])
+            last_date = gpr_df.set_index("month")["GPRH"].dropna().index[-1].strftime("%b %Y")
+            gpr_pct   = float((gpr_df.set_index("month")["GPRH"].dropna() < last_gpr).mean() * 100)
+            gpr_col_v = RED if last_gpr > 150 else (ORANGE if last_gpr > 100 else CYAN)
+            st.markdown(f"""
+            <div style="background:{PAPER_BG};border:1px solid {gpr_col_v};border-radius:4px;
+                        padding:8px 16px;display:flex;align-items:center;gap:20px">
+              <div>
+                <div style="font-size:0.52rem;letter-spacing:2px;color:{MUTED}">GPRH ULTIMO ({last_date})</div>
+                <div style="font-family:Syne;font-size:1.4rem;font-weight:700;color:{gpr_col_v}">{last_gpr:.1f}</div>
+              </div>
+              <div style="font-size:0.6rem;color:{TEXT_COL};line-height:1.7">
+                Percentile storico: <b style="color:{gpr_col_v}">{gpr_pct:.0f}°</b><br>
+                Media storica: 100 · Soglia stress: 150<br>
+                Fonte: Caldara & Iacoviello (2022)
+              </div>
+            </div>""", unsafe_allow_html=True)
+        else:
+            st.info("GPR Index non disponibile. Carica il CSV dalla sidebar per abilitare il grafico.")
+
+        # Gold
         gold = mkt_data.get("GOLD")
         if gold is not None and not gold.empty:
             gold_d = fbd(gold, cut)
             fig = go.Figure()
             fig.add_trace(go.Scatter(x=gold_d.index, y=gold_d,
                 line=dict(color=GOLD_COL, width=2.5), name="Gold (USD)"))
-            fig.update_layout(**base_layout("Gold USD/oz", 240))
+            fig.update_layout(**base_layout("Gold USD/oz", 230))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-        col_m, col_d = st.columns(2)
-        with col_m:
-            move = mkt_data.get("MOVE")
-            if move is not None and not move.empty:
-                move_d = fbd(move, cut)
+        col_oi, col_eem = st.columns(2)
+        with col_oi:
+            oil = mkt_data.get("OIL")
+            if oil is not None and not oil.empty:
+                oil_d = fbd(oil, cut)
                 fig = go.Figure()
-                fig.add_trace(go.Scatter(x=move_d.index, y=move_d,
-                    line=dict(color=MAGENTA, width=2), fill="tozeroy",
-                    fillcolor="rgba(255,43,212,0.07)", name="MOVE"))
-                add_percentile_bands(fig, move)
-                fig.update_layout(**base_layout("MOVE Index — Bond Volatility", 230))
+                fig.add_trace(go.Scatter(x=oil_d.index, y=oil_d,
+                    line=dict(color=ORANGE, width=2), fill="tozeroy",
+                    fillcolor="rgba(245,166,35,0.07)", name="WTI"))
+                add_percentile_bands(fig, oil)
+                fig.update_layout(**base_layout("Oil WTI (USD/bbl)", 230))
                 st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-        with col_d:
-            dxy = mkt_data.get("DXY")
-            if dxy is not None and not dxy.empty:
-                dxy_d = fbd(dxy, cut)
+        with col_eem:
+            eem = mkt_data.get("EEM")
+            if eem is not None and not eem.empty:
+                eem_d = fbd(eem, cut)
                 fig = go.Figure()
-                fig.add_trace(go.Scatter(x=dxy_d.index, y=dxy_d,
-                    line=dict(color=BLUE, width=2), name="DXY"))
-                add_percentile_bands(fig, dxy)
-                fig.update_layout(**base_layout("Dollar Index (DXY)", 230))
+                fig.add_trace(go.Scatter(x=eem_d.index, y=eem_d,
+                    line=dict(color=CYAN, width=2), name="EEM"))
+                fig.update_layout(**base_layout("EEM — Emerging Markets ETF", 230))
                 st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-        oil = mkt_data.get("OIL")
-        if oil is not None and not oil.empty:
-            oil_d = fbd(oil, cut)
+        dxy = mkt_data.get("DXY")
+        if dxy is not None and not dxy.empty:
+            dxy_d = fbd(dxy, cut)
             fig = go.Figure()
-            fig.add_trace(go.Scatter(x=oil_d.index, y=oil_d,
-                line=dict(color=ORANGE, width=2), fill="tozeroy",
-                fillcolor="rgba(245,166,35,0.07)", name="WTI"))
-            add_percentile_bands(fig, oil)
-            fig.update_layout(**base_layout("Oil WTI (USD/bbl)", 230))
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-
-        eem = mkt_data.get("EEM")
-        if eem is not None and not eem.empty:
-            eem_d = fbd(eem, cut)
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=eem_d.index, y=eem_d,
-                line=dict(color=CYAN, width=2), name="EEM"))
-            fig.update_layout(**base_layout("EEM — Emerging Markets ETF", 220))
+            fig.add_trace(go.Scatter(x=dxy_d.index, y=dxy_d,
+                line=dict(color=BLUE, width=2), name="DXY"))
+            add_percentile_bands(fig, dxy)
+            fig.update_layout(**base_layout("Dollar Index (DXY) — lookback 30Y", 220))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1561,7 +1852,7 @@ with tab7:
           <div class="metric-label">ARCHITETTURA DEI PILASTRI</div>
           <div style="font-size:0.65rem;color:{TEXT_COL};line-height:1.8;margin-top:8px">
             <b style="color:{CYAN}">A · Monetario (20%)</b><br>
-            M2/PIL · M2 Reale · Velocity · Real Yield · HY OAS · STLFSI<br><br>
+            M2/PIL · M2 Reale · Velocity · Real Yield · HY OAS · STLFSI · <b>MOVE</b><br><br>
             <b style="color:{LIME}">B · Economia Reale (30%)</b><br>
             PMI Composito · INDPRO YoY · Disoccupazione D3M · NFP D3M · Core PCE YoY<br><br>
             <b style="color:{ORANGE}">C · Fiscale (15%)</b><br>
@@ -1569,7 +1860,7 @@ with tab7:
             <b style="color:{BLUE}">D · Produttivo (15%)</b><br>
             Capacity Utilization · ULC YoY · Output Gap · Produttivita YoY<br><br>
             <b style="color:{MAGENTA}">E · Geopolitico (20%)</b><br>
-            Oil WTI · EEM 3M · MOVE Index · DXY
+            Oil WTI · EEM 3M · DXY · <b>GPR Index</b> (se CSV caricato)
           </div>
         </div>""", unsafe_allow_html=True)
 
@@ -1608,15 +1899,20 @@ with tab7:
             <span style="color:{CYAN}">BUG</span> HY OAS: unita corretta (x100 = bp)<br>
             <span style="color:{CYAN}">BUG</span> Serie storica: percentile expanding<br>
             <span style="color:{CYAN}">BUG</span> Pesi storico allineati al live<br>
+            <span style="color:{CYAN}">BUG</span> PMI card mostra valore numerico<br>
             <span style="color:{LIME}">NEW</span> STLFSI Financial Stress Index<br>
             <span style="color:{LIME}">NEW</span> PMI auto-FRED (ISM Mfg + Svc)<br>
             <span style="color:{LIME}">NEW</span> Regime Persistence Metric<br>
             <span style="color:{LIME}">NEW</span> Tab Backtest rendimenti per regime<br>
+            <span style="color:{LIME}">NEW</span> GPR Index + eventi storici (v1.4.1)<br>
+            <span style="color:{LIME}">NEW</span> GPR subplot sottopancia Tab1 (v1.4.1)<br>
+            <span style="color:{LIME}">NEW</span> File uploader CSV GPR sidebar (v1.4.1)<br>
             <span style="color:{LIME}">NEW</span> Label L/C/LAG indicatori<br>
+            <span style="color:{ORANGE}">UX</span> MOVE → Pilastro A Monetario (v1.4.1)<br>
+            <span style="color:{ORANGE}">UX</span> DXY lookback 30Y (v1.4.1)<br>
             <span style="color:{ORANGE}">UX</span> Radar chart recuperato da v1.0<br>
             <span style="color:{ORANGE}">UX</span> PMI gauge visivo recuperato da v1.0<br>
             <span style="color:{ORANGE}">UX</span> Bande percentile su grafici chiave<br>
-            <span style="color:{ORANGE}">UX</span> Tabella score in expander collassato<br>
-            <span style="color:{ORANGE}">UX</span> Bande percentile TCU, HY OAS, MOVE
+            <span style="color:{ORANGE}">UX</span> Tabella score in expander collassato
           </div>
         </div>""", unsafe_allow_html=True)
