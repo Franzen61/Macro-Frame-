@@ -1,39 +1,27 @@
 """
-MACRO CORE ENGINE v1.4.1
+MACRO CORE ENGINE v1.4.2
 ========================
 5-Pillar Macro Regime Monitor
 Companion: Settoriale · Commodity Supercycle · Bond Monitor · Equity Pulse
 
+v1.4.2 — fix:
+  - BUG FIX: m2_gdp_ratio e m2_velocity usano resample("QS") per allineamento
+    corretto con GDP FRED (fix grafico M2/PIL vuoto e Velocity assente)
+
 v1.4.1 — patch:
   - MOVE Index spostato da Geopolitico → Monetario (misura vol tassi, non geo)
   - GPR Index (Caldara & Iacoviello) integrato nel Pilastro E Geopolitico
-    · GPRH storico 1900-oggi con marker eventi storici
-    · GPR recente dal 1985
-    · Sub-componenti: GPRHT (threats) vs GPRHA (acts)
-    · Subplot GPR "sottopancia" al Composite Score in Tab1
-  - File uploader CSV GPR in sidebar (aggiornamento periodico manuale)
-  - DXY lookback esteso a 30Y (fix sovrastima stress da DXY)
+  - File uploader CSV GPR in sidebar
+  - DXY lookback esteso a 30Y
   - PMI summary card mostra valore numerico (bug fix)
 
 v1.4 — fix + upgrade:
-  BUG FIX:
   - HY OAS: unità corretta (×100 → basis points)
-  - Serie storica: percentile expanding (cattura tutti i bear market)
-  - Pesi serie storica allineati al live scoring
-  - Coerenza indicatori storico vs live (NFP, PCE, ULC aggiunti)
-
-  UX RECOVERY da v1.0:
-  - Radar chart 5 pilastri recuperato in Tab1
-  - PMI gauge visivo recuperato in Tab3
-  - Bande percentile su grafici chiave (TCU, HY OAS)
-  - Tabella indicatori in expander collassato (non occupa spazio)
-
-  NUOVE FEATURE:
-  - PMI automatico via FRED (NAPM + NMFBAI) con slider override
-  - STLFSI2 (Financial Stress Index) nel pilastro A Monetario
-  - Regime Persistence Metric (std rolling 6M composite)
-  - Tab 7: Backtesting per regime (rendimenti medi SPY/TLT/GLD/GSG)
-  - Label L/LAG nella tabella indicatori (leading vs lagging)
+  - Serie storica: percentile expanding
+  - PMI automatico via FRED
+  - STLFSI Financial Stress Index
+  - Regime Persistence Metric
+  - Tab Backtest rendimenti per regime
 """
 
 import streamlit as st
@@ -177,26 +165,21 @@ PURPLE   = "#bb88ff"
 FRED_API_KEY = "938a76ed726e8351f43e1b0c36365784"
 
 # ============================================================================
-# GPR EVENTS DICTIONARY (Caldara & Iacoviello — etichette storiche 1900-2017)
-# Usato come overlay marker sul grafico GPRH
-# Integrato con eventi 2020-2026 aggiunti manualmente
+# GPR EVENTS
 # ============================================================================
 GPR_EVENTS = {
-    # Pre-WWII
     "1900-07": "Boxer Rebellion",
     "1904-02": "Russia-Jap War",
     "1914-08": "WWI Begins",
     "1939-09": "WWII Begins",
     "1941-12": "Pearl Harbor",
     "1944-06": "D-Day",
-    # Cold War
     "1950-07": "Korean War",
     "1956-11": "Suez Crisis",
     "1962-10": "Cuban Missile",
     "1973-10": "Yom Kippur",
     "1980-01": "USSR→Afghan.",
     "1982-04": "Falklands",
-    # Post-Cold War
     "1990-08": "Iraq→Kuwait",
     "1991-01": "Gulf War",
     "2001-09": "September 11",
@@ -205,7 +188,6 @@ GPR_EVENTS = {
     "2014-03": "Crimea",
     "2015-11": "Paris Attacks",
     "2017-08": "US-Korea",
-    # Post-2020 (aggiunti manualmente)
     "2020-03": "COVID-19",
     "2022-02": "Russia→Ukraine",
     "2023-10": "Gaza War",
@@ -217,22 +199,14 @@ GPR_EVENTS = {
 # GPR DATA LOADER
 # ============================================================================
 def load_gpr_data(uploaded_file=None):
-    """
-    Carica il CSV del GPR Index.
-    Se viene passato un file caricato via st.file_uploader, usa quello.
-    Altrimenti torna None (grafico non disponibile).
-    """
     try:
         if uploaded_file is not None:
             df = pd.read_csv(uploaded_file, sep=",", low_memory=False)
         else:
             return None
-
         df["month"] = pd.to_datetime(df["month"])
         df = df.sort_values("month")
-        # Droppa artefatto Excel row 0 (1899)
         df = df[df["month"].dt.year >= 1900].reset_index(drop=True)
-
         cols = [c for c in ["month","GPR","GPRT","GPRA","GPRH","GPRHT","GPRHA"] if c in df.columns]
         return df[cols].copy()
     except Exception:
@@ -284,7 +258,6 @@ def score_cc(s):
     return "red"
 
 def pct_score(series, invert=False):
-    """Percentile score sull'intera distribuzione storica disponibile."""
     s = series.dropna()
     if len(s) < 20: return 50.0
     val = float(s.iloc[-1])
@@ -314,11 +287,6 @@ def fbd(s, cut):
     return s[s.index >= cut].dropna()
 
 def add_percentile_bands(fig, series, row=1, col=1, invert=False):
-    """
-    Bande 25/75 percentile con colore coerente col segnale economico.
-    invert=False: alto=BULL  → 75p=CYAN, 25p=RED
-    invert=True:  alto=BEAR  → 75p=RED,  25p=CYAN
-    """
     if series is None or len(series.dropna()) < 20:
         return
     p25 = float(np.percentile(series.dropna(), 25))
@@ -336,7 +304,6 @@ def add_percentile_bands(fig, series, row=1, col=1, invert=False):
                   annotation_position="right",
                   annotation_font=dict(color=low_col, size=8), row=row, col=col)
 
-
 # ============================================================================
 # FRED CLIENT
 # ============================================================================
@@ -353,7 +320,13 @@ fred_client = get_fred()
 def load_fred_series(series_id, years=20):
     start = (datetime.now() - timedelta(days=365*years)).strftime("%Y-%m-%d")
     try:
-        return fred_client.get_series(series_id, observation_start=start).dropna()
+        s = fred_client.get_series(series_id, observation_start=start).dropna()
+        # Normalizza indice a DatetimeIndex tz-naive
+        if not isinstance(s.index, pd.DatetimeIndex):
+            s.index = pd.to_datetime(s.index)
+        if hasattr(s.index, "tz") and s.index.tz is not None:
+            s.index = s.index.tz_localize(None)
+        return s
     except Exception:
         return pd.Series(dtype=float)
 
@@ -386,14 +359,10 @@ def load_market_data():
     result = {}
     tickers = {
         "OIL": "CL=F", "EEM": "EEM", "MOVE": "^MOVE",
-        "GOLD": "GC=F",
-        "DXY": "DX-Y.NYB",  # v1.4.1: scaricato con 30Y per lookback corretto
+        "GOLD": "GC=F", "DXY": "DX-Y.NYB",
         "SPY": "SPY", "TLT": "TLT", "GLD": "GLD", "GSG": "GSG",
     }
-    periods = {
-        "DXY": "30y",   # v1.4.1: esteso da 20Y a 30Y
-        "MOVE": "25y",
-    }
+    periods = {"DXY": "30y", "MOVE": "25y"}
     for name, ticker in tickers.items():
         try:
             period = periods.get(name, "25y")
@@ -404,25 +373,57 @@ def load_market_data():
             pass
     return result
 
+# ============================================================================
+# DATA TRANSFORMS — v1.4.2: fix QS resample per allineamento GDP FRED
+# ============================================================================
+def _to_dti(s):
+    """Forza indice a DatetimeIndex tz-naive — robusto a object/string/tz-aware da FRED."""
+    s = s.copy()
+    if not isinstance(s.index, pd.DatetimeIndex):
+        s.index = pd.to_datetime(s.index)
+    if hasattr(s.index, "tz") and s.index.tz is not None:
+        s.index = s.index.tz_localize(None)
+    return s
+
 def m2_gdp_ratio(m2, gdp):
     if m2.empty or gdp.empty: return pd.Series(dtype=float)
-    m2_q = m2.resample("Q").last()
-    g, m = gdp.align(m2_q, join="inner")
-    return (m / g).dropna() if len(g) > 0 else pd.Series(dtype=float)
+    try:
+        m2  = _to_dti(m2)
+        gdp = _to_dti(gdp)
+        m2_q  = m2.resample("QS").last()
+        gdp_q = gdp.resample("QS").last().ffill()
+        g, m  = gdp_q.align(m2_q, join="inner")
+        if len(g) == 0: return pd.Series(dtype=float)
+        ratio = (m / g).dropna()
+        return ratio
+    except Exception:
+        return pd.Series(dtype=float)
 
 def m2_real(m2, cpi):
     if m2.empty or cpi.empty: return pd.Series(dtype=float)
-    m2_m = m2.resample("M").last()
-    cpi_m = cpi.resample("M").last()
-    m2_m, cpi_m = m2_m.align(cpi_m, join="inner")
-    if len(m2_m) == 0: return pd.Series(dtype=float)
-    return (m2_m / (cpi_m / cpi_m.iloc[0]) * 100).dropna()
+    try:
+        m2  = _to_dti(m2)
+        cpi = _to_dti(cpi)
+        m2_m  = m2.resample("M").last()
+        cpi_m = cpi.resample("M").last()
+        m2_m, cpi_m = m2_m.align(cpi_m, join="inner")
+        if len(m2_m) == 0: return pd.Series(dtype=float)
+        return (m2_m / (cpi_m / cpi_m.iloc[0]) * 100).dropna()
+    except Exception:
+        return pd.Series(dtype=float)
 
 def m2_velocity(m2, gdp):
     if m2.empty or gdp.empty: return pd.Series(dtype=float)
-    m2_q = m2.resample("Q").last()
-    g, m = gdp.align(m2_q, join="inner")
-    return (g / m).dropna() if len(g) > 0 else pd.Series(dtype=float)
+    try:
+        m2  = _to_dti(m2)
+        gdp = _to_dti(gdp)
+        m2_q  = m2.resample("QS").last()
+        gdp_q = gdp.resample("QS").last().ffill()
+        g, m  = gdp_q.align(m2_q, join="inner")
+        if len(g) == 0: return pd.Series(dtype=float)
+        return (g / m).dropna()
+    except Exception:
+        return pd.Series(dtype=float)
 
 def yoy(series, periods=12):
     return series.pct_change(periods).mul(100).dropna()
@@ -447,10 +448,8 @@ def pmi_auto_fred(ism_mfg, ism_svc):
     return float(a.iloc[-1] * 0.60 + b.iloc[-1] * 0.40)
 
 # ============================================================================
-# SCORING ENGINE
+# INDICATOR METADATA
 # ============================================================================
-
-# Metadata indicatori: (nome, tipo L=leading/LAG=lagging/C=coincident)
 INDICATOR_META = {
     "M2/PIL":              "C",
     "M2 Reale":            "C",
@@ -458,7 +457,7 @@ INDICATOR_META = {
     "Real Yield 10Y":      "L",
     "HY OAS Spread":       "L",
     "Stress Finanziario":  "L",
-    "MOVE Index":          "L",   # v1.4.1: spostato in Monetario
+    "MOVE Index":          "L",
     "PMI Composito":       "L",
     "INDPRO YoY":          "LAG",
     "Disoccupazione D3M":  "LAG",
@@ -472,16 +471,20 @@ INDICATOR_META = {
     "Produttivita' YoY":   "LAG",
     "Oil (WTI)":           "L",
     "EEM 3M":              "L",
-    "GPR Index":           "L",   # v1.4.1: nuovo
+    "GPR Index":           "L",
     "DXY":                 "L",
 }
 
+# ============================================================================
+# SCORING ENGINE
+# ============================================================================
 def score_monetary(d):
     ind, scores = {}, []
 
     mg = m2_gdp_ratio(d["M2"], d["GDP"])
     if not mg.empty:
-        s = pct_score(mg.resample("M").interpolate())
+        mg_m = mg.sort_index().resample("M").interpolate(method="time")
+        s = pct_score(mg_m)
         scores.append(s)
         ind["M2/PIL"] = {"value": fmt(float(mg.iloc[-1]), 3), "score": s,
                          "series": mg, "unit": "", "desc": "M2 / PIL nominale"}
@@ -495,7 +498,8 @@ def score_monetary(d):
 
     vel = m2_velocity(d["M2"], d["GDP"])
     if not vel.empty:
-        s = pct_score(vel.resample("M").interpolate())
+        vel_m = vel.sort_index().resample("M").interpolate(method="time")
+        s = pct_score(vel_m)
         scores.append(s)
         ind["Velocity (GDP/M2)"] = {"value": fmt(float(vel.iloc[-1]), 3), "score": s,
                                      "series": vel, "unit": "x", "desc": "Velocita' moneta"}
@@ -509,14 +513,12 @@ def score_monetary(d):
 
     hy = d["HY_OAS"].resample("M").last() if not d["HY_OAS"].empty else pd.Series(dtype=float)
     if not hy.empty:
-        # FIX v1.4: BAMLH0A0HYM2 e' in %, mostriamo in bp (x100)
         hy_bp = hy * 100
         s = pct_score(hy, invert=True)
         scores.append(s)
         ind["HY OAS Spread"] = {"value": fmt(float(hy_bp.iloc[-1]), 0), "score": s,
                                  "series": hy, "unit": "bp", "desc": "Spread HY · basso = no stress"}
 
-    # NUOVO v1.4: Financial Stress Index
     stlfsi = d["STLFSI"].resample("M").last() if not d["STLFSI"].empty else pd.Series(dtype=float)
     if not stlfsi.empty:
         s = pct_score(stlfsi, invert=True)
@@ -525,8 +527,6 @@ def score_monetary(d):
                                       "series": stlfsi, "unit": "idx",
                                       "desc": "STLFSI · neg = nessuno stress · pos = stress elevato"}
 
-    # v1.4.1: MOVE Index spostato da Geopolitico → Monetario
-    # Misura volatilità implicita dei Treasury USA → è un indicatore monetario, non geopolitico
     move = d.get("MOVE")
     if move is not None and not (isinstance(move, pd.Series) and move.empty) and len(move) > 60:
         move_m = move.resample("M").last() if isinstance(move.index, pd.DatetimeIndex) else move
@@ -542,7 +542,6 @@ def score_monetary(d):
 def score_real_economy(d, pmi_override):
     ind, scores = {}, []
 
-    # PMI: prova auto-FRED, poi usa slider se override attivo
     pmi_auto = pmi_auto_fred(d.get("ISM_MFG", pd.Series()), d.get("ISM_SVC", pd.Series()))
     pmi = pmi_override if pmi_override is not None else pmi_auto
     pmi_source = "manuale" if pmi_override is not None else ("FRED ISM" if pmi_auto is not None else "N/A")
@@ -654,15 +653,12 @@ def score_geopolitical(mkt, gpr_df=None):
         scores.append(s)
         ind["EEM 3M"] = {"value": fmt(eem_3m, 1), "score": round(s, 1),
                           "series": eem, "unit": "%", "desc": "ETF EM 3 mesi · positivo = risk appetite"}
-    # MOVE rimosso → spostato in Pilastro A Monetario (v1.4.1)
     dxy = mkt.get("DXY")
     if dxy is not None and len(dxy) > 60:
-        # v1.4.1: lookback 30Y per DXY (20Y sovrastimava stress da dollaro)
         s = pct_score(dxy, invert=True)
         scores.append(s)
         ind["DXY"] = {"value": fmt(float(dxy.iloc[-1]), 1), "score": s,
                        "series": dxy, "unit": "", "desc": "Dollar Index · lookback 30Y · alto = stress EM"}
-    # v1.4.1: GPR Index (Caldara & Iacoviello) — score solo se dati disponibili
     if gpr_df is not None and not gpr_df.empty:
         gpr_col = "GPR" if gpr_df["GPR"].notna().sum() > 50 else "GPRH"
         gpr_s   = gpr_df.set_index("month")[gpr_col].dropna()
@@ -686,46 +682,37 @@ def compute_regime(growth, inflation):
     return     "DISINFLATIONARY BUST", BLUE,   "Crescita debole · disinflazione · favorevole bond lunghi"
 
 # ============================================================================
-# SERIE STORICA — FIX v1.4: percentile expanding, pesi coerenti, più indicatori
+# SERIE STORICA
 # ============================================================================
 @st.cache_data(ttl=3600*6)
 def build_historical_composite():
-    """
-    FIX v1.4:
-    - Percentile EXPANDING (usa tutta la storia disponibile come baseline)
-      invece di rolling 10Y → cattura correttamente 2001, 2008, 2020
-    - Indicatori aggiuntivi: NFP, PCE, ULC (coerente col live)
-    - Pesi allineati al live: A=20% B=30% C=15% D=15% E=20%
-    - sE calcolato su Oil + DXY storici (non fisso a 50)
-    """
     try:
         f = Fred(api_key=FRED_API_KEY)
         def gs(sid, y=25):
             start = (datetime.now() - timedelta(days=365*y)).strftime("%Y-%m-%d")
             return f.get_series(sid, observation_start=start).dropna()
 
-        m2      = gs("M2SL").resample("M").last()
-        gdp     = gs("GDP").resample("M").last().ffill()
-        ry      = gs("DFII10").resample("M").last()
-        hy      = gs("BAMLH0A0HYM2").resample("M").last()
-        ip      = gs("INDPRO").resample("M").last()
-        ur      = gs("UNRATE").resample("M").last()
-        nfp     = gs("PAYEMS").resample("M").last()
-        pce_s   = gs("PCEPILFE").resample("M").last()
-        tcu     = gs("TCU").resample("M").last()
-        ulc_q   = gs("ULCNFB").resample("Q").last().resample("M").ffill()
-        def_    = gs("FYFSGDA188S").resample("M").last().ffill()
-        debt    = gs("GFDEGDQ188S").resample("M").last().ffill()
+        m2    = gs("M2SL").resample("M").last()
+        gdp   = gs("GDP").resample("M").last().ffill()
+        ry    = gs("DFII10").resample("M").last()
+        hy    = gs("BAMLH0A0HYM2").resample("M").last()
+        ip    = gs("INDPRO").resample("M").last()
+        ur    = gs("UNRATE").resample("M").last()
+        nfp   = gs("PAYEMS").resample("M").last()
+        pce_s = gs("PCEPILFE").resample("M").last()
+        tcu   = gs("TCU").resample("M").last()
+        ulc_q = gs("ULCNFB").resample("Q").last().resample("M").ffill()
+        def_  = gs("FYFSGDA188S").resample("M").last().ffill()
+        debt  = gs("GFDEGDQ188S").resample("M").last().ffill()
 
-        mg_h    = (m2 / gdp).dropna()
-        ip_y    = ip.pct_change(12).mul(100)
-        ur3     = ur.diff(3)
-        nfp3    = (nfp.diff(3) / 1000)
-        pce_y   = pce_s.pct_change(12).mul(100)
-        ulc_y   = ulc_q.pct_change(4).mul(100)
-        imp_f   = def_.diff(1)
+        mg_h  = (m2 / gdp).dropna()
+        ip_y  = ip.pct_change(12).mul(100)
+        ur3   = ur.diff(3)
+        nfp3  = (nfp.diff(3) / 1000)
+        pce_y = pce_s.pct_change(12).mul(100)
+        ulc_y = ulc_q.pct_change(4).mul(100)
+        imp_f = def_.diff(1)
 
-        # Expanding percentile: usa tutta la storia fino al punto t
         def exp_pct(s, inv=False):
             res = s.expanding(min_periods=24).apply(
                 lambda x: float((x[:-1] < x[-1]).mean() * 100) if len(x) > 1 else 50.0,
@@ -737,26 +724,20 @@ def build_historical_composite():
                 exp_pct(nfp3) + exp_pct(abs(pce_y - 2.0), inv=True)) / 4
         sC_h = (exp_pct(imp_f, inv=True) + exp_pct(debt, inv=True)) / 2
         sD_h = (exp_pct(tcu) + exp_pct(ulc_y, inv=True)) / 2
-        sE_h = pd.Series(50.0, index=sA_h.index)  # geopolitico neutro (no dati storici affidabili)
+        sE_h = pd.Series(50.0, index=sA_h.index)
 
-        # Allinea tutto
-        df = pd.DataFrame({
-            "sA": sA_h, "sB": sB_h, "sC": sC_h, "sD": sD_h, "sE": sE_h
-        }).dropna()
-
-        # Pesi live: A=20 B=30 C=15 D=15 E=20
+        df = pd.DataFrame({"sA": sA_h, "sB": sB_h, "sC": sC_h, "sD": sD_h, "sE": sE_h}).dropna()
         df["Composite"]  = df["sA"]*0.20 + df["sB"]*0.30 + df["sC"]*0.15 + df["sD"]*0.15 + df["sE"]*0.20
         df["Monetario"]  = df["sA"]
         df["Econ.Reale"] = df["sB"]
         df["Fiscale"]    = df["sC"]
         df["Produttivo"] = df["sD"]
-
         return df[["Composite","Monetario","Econ.Reale","Fiscale","Produttivo"]].dropna()
     except Exception:
         return pd.DataFrame()
 
 # ============================================================================
-# BACKTESTING PER REGIME
+# BACKTESTING
 # ============================================================================
 @st.cache_data(ttl=3600*6)
 def build_regime_backtest(hist_df):
@@ -784,8 +765,7 @@ def build_regime_backtest(hist_df):
             except Exception:
                 pass
 
-        if not assets:
-            return None
+        if not assets: return None
 
         asset_df = pd.DataFrame(assets).dropna(how="all")
         merged = hist[["regime"]].join(asset_df, how="inner").dropna()
@@ -799,16 +779,14 @@ def build_regime_backtest(hist_df):
             row = {"n_months": len(sub)}
             for a in assets:
                 if a in sub.columns:
-                    row[f"{a}_avg"]  = round(float(sub[a].mean()), 2)
-                    row[f"{a}_hit"]  = round(float((sub[a] > 0).mean() * 100), 0)
+                    row[f"{a}_avg"] = round(float(sub[a].mean()), 2)
+                    row[f"{a}_hit"] = round(float((sub[a] > 0).mean() * 100), 0)
             results[regime] = row
 
-        # Aggiungi anche la serie regime nel tempo
         results["_regime_series"] = hist["regime"]
         return results
     except Exception:
         return None
-
 
 # ============================================================================
 # SIDEBAR
@@ -819,18 +797,15 @@ with st.sidebar:
         '🧭 MACRO CORE ENGINE</div>', unsafe_allow_html=True)
     st.markdown(
         '<div style="font-size:0.58rem;letter-spacing:3px;color:#4a6070;'
-        'text-transform:uppercase;margin-bottom:14px">v1.4.1 · Regime Monitor</div>',
+        'text-transform:uppercase;margin-bottom:14px">v1.4.2 · Regime Monitor</div>',
         unsafe_allow_html=True)
 
     st.markdown('<div class="sidebar-section">📊 PMI Composito</div>', unsafe_allow_html=True)
-    pmi_override_active = st.checkbox("Override PMI manuale", value=False,
-        help="Se disattivo usa ISM Manufacturing + Services da FRED automaticamente")
+    pmi_override_active = st.checkbox("Override PMI manuale", value=False)
     pmi_slider = st.slider("PMI USA/Globale", 35.0, 65.0, 52.0, 0.1,
-        help=">52 espansione, <48 contrazione, 50=neutro",
         disabled=not pmi_override_active)
     pmi_manual = pmi_slider if pmi_override_active else None
 
-    # ── GPR FILE UPLOADER ──────────────────────────────────────────────────
     st.markdown('<div class="sidebar-section">🌍 GPR Index — Aggiornamento</div>',
         unsafe_allow_html=True)
     st.markdown(
@@ -840,22 +815,16 @@ with st.sidebar:
         'Formato: CSV virgola, colonne GPR/GPRH/GPRHT/GPRHA<br>'
         'Aggiornamento: mensile (~ giorno 10)</div>',
         unsafe_allow_html=True)
-    gpr_uploaded = st.file_uploader(
-        "CSV GPR Index",
-        type=["csv"],
-        help="Scarica il file mensile da matteoiacoviello.com e caricalo qui",
-        label_visibility="collapsed",
-    )
+    gpr_uploaded = st.file_uploader("CSV GPR Index", type=["csv"],
+        label_visibility="collapsed")
     if gpr_uploaded:
         st.markdown(
             f'<div style="font-size:0.58rem;color:{CYAN};margin-top:4px">'
-            f'✓ File caricato: {gpr_uploaded.name}</div>',
-            unsafe_allow_html=True)
+            f'✓ File caricato: {gpr_uploaded.name}</div>', unsafe_allow_html=True)
     else:
         st.markdown(
             f'<div style="font-size:0.55rem;color:{MUTED};margin-top:2px">'
-            'Nessun file — grafico GPR non disponibile</div>',
-            unsafe_allow_html=True)
+            'Nessun file — grafico GPR non disponibile</div>', unsafe_allow_html=True)
 
     st.markdown('<div class="sidebar-section">⚙️ Impostazioni</div>', unsafe_allow_html=True)
     years_display = st.selectbox("Finestra grafici (anni)", [5, 10, 15, 20], index=1)
@@ -883,14 +852,13 @@ with st.spinner("Caricamento dati FRED + mercati..."):
     mkt_data  = load_market_data()
     gpr_df    = load_gpr_data(gpr_uploaded)
 
-# v1.4.1: inietta MOVE in fred_data per score_monetary
 fred_data["MOVE"] = mkt_data.get("MOVE", pd.Series(dtype=float))
 
-sA, indA           = score_monetary(fred_data)
-sB, indB, pmi_src  = score_real_economy(fred_data, pmi_manual)
-sC, indC           = score_fiscal(fred_data)
-sD, indD           = score_productive(fred_data)
-sE, indE           = score_geopolitical(mkt_data, gpr_df)
+sA, indA          = score_monetary(fred_data)
+sB, indB, pmi_src = score_real_economy(fred_data, pmi_manual)
+sC, indC          = score_fiscal(fred_data)
+sD, indD          = score_productive(fred_data)
+sE, indE          = score_geopolitical(mkt_data, gpr_df)
 
 pillar_scores = {"A · Monetario": sA, "B · Econ. Reale": sB,
                  "C · Fiscale": sC, "D · Produttivo": sD, "E · Geopolitico": sE}
@@ -907,7 +875,7 @@ regime_label, regime_color, regime_desc = compute_regime(growth_score, inflation
 # ============================================================================
 st.markdown('<div class="main-title">🧭 Macro Core Engine</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="sub-title">5-Pillar Macro Regime Monitor · FRED + yfinance · Percentile Expanding · v1.4</div>',
+    '<div class="sub-title">5-Pillar Macro Regime Monitor · FRED + yfinance · Percentile Expanding · v1.4.2</div>',
     unsafe_allow_html=True)
 st.markdown(
     f'<div style="font-size:0.58rem;color:{MUTED};text-align:right;margin-top:2px;margin-bottom:4px">'
@@ -916,18 +884,13 @@ st.markdown(
     unsafe_allow_html=True)
 st.markdown(f'<hr style="border:0;border-top:1px solid {GRID_COL};margin-bottom:4px">', unsafe_allow_html=True)
 
-
 # ============================================================================
 # TABS
 # ============================================================================
 tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-    "🧭 Overview",
-    "💰 Monetario",
-    "📈 Econ. Reale",
-    "🏛️ Fiscale · Produttivo",
-    "🌍 Geopolitico",
-    "📊 Backtest Regime",
-    "ℹ️ Metodologia",
+    "🧭 Overview", "💰 Monetario", "📈 Econ. Reale",
+    "🏛️ Fiscale · Produttivo", "🌍 Geopolitico",
+    "📊 Backtest Regime", "ℹ️ Metodologia",
 ])
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -966,9 +929,9 @@ with tab1:
             pmi_col_rc3 = MUTED
             pmi_display_rc3 = f"N/A ({pmi_src[:4]})"
         for label, val, col in [
-            ("Macro Breadth",     f"{breadth:.0f}%",      BLUE),
-            ("Regime Confidence", f"{confidence:.1f}",    MAGENTA),
-            ("PMI / fonte",       pmi_display_rc3,        pmi_col_rc3),
+            ("Macro Breadth",     f"{breadth:.0f}%",   BLUE),
+            ("Regime Confidence", f"{confidence:.1f}", MAGENTA),
+            ("PMI / fonte",       pmi_display_rc3,     pmi_col_rc3),
         ]:
             st.markdown(f"""<div class="summary-cell">
               <div class="summary-cell-label">{label}</div>
@@ -1029,7 +992,6 @@ with tab1:
             showlegend=False))
         st.plotly_chart(fig_quad, use_container_width=True, config={"displayModeBar": False})
 
-    # RADAR CHART recuperato da v1.0
     radar_col, asset_col = st.columns([1, 1])
     with radar_col:
         st.markdown('<div class="section-label">Radar — Profilo Macro</div>', unsafe_allow_html=True)
@@ -1084,8 +1046,8 @@ with tab1:
               <div style="font-size:0.58rem;color:#8ab0c8">{desc}</div>
             </div>""", unsafe_allow_html=True)
 
-    # SERIE STORICA
-    st.markdown('<div class="section-label">Serie Storica Composite · Percentile Expanding · Alert Zona</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-label">Serie Storica Composite · Percentile Expanding · Alert Zona</div>',
+        unsafe_allow_html=True)
     hist = build_historical_composite()
 
     if not hist.empty:
@@ -1119,7 +1081,6 @@ with tab1:
         fig_h.update_layout(**lh)
         st.plotly_chart(fig_h, use_container_width=True, config={"displayModeBar": False})
 
-        # Persistence + Alert
         p_left, p_right = st.columns([1, 2])
         with p_left:
             if persistence_val is not None:
@@ -1161,45 +1122,38 @@ with tab1:
     else:
         st.info("Serie storica non disponibile.")
 
-    # ── GPR SUBPLOT SOTTOPANCIA ────────────────────────────────────────────
     if gpr_df is not None and not gpr_df.empty:
         st.markdown('<div class="section-label">GPR Index — Geopolitical Risk (sottopancia)</div>',
             unsafe_allow_html=True)
         gpr_col_use = "GPR" if gpr_df["GPR"].notna().sum() > 50 else "GPRH"
         gpr_plot = gpr_df.set_index("month")[gpr_col_use].dropna()
         gpr_cut  = gpr_plot[gpr_plot.index >= cutoff_date(max(years_display, 10))]
-
         fig_gpr_sub = go.Figure()
-        # Zona stress (>150)
         fig_gpr_sub.add_hrect(y0=150, y1=gpr_plot.max()*1.1,
             fillcolor="rgba(255,77,109,0.06)", line_width=0)
         fig_gpr_sub.add_hline(y=100, line_dash="dot", line_color=MUTED, line_width=1,
             annotation_text="Media storica 100", annotation_position="right",
             annotation_font=dict(color=MUTED, size=8))
-        fig_gpr_sub.add_trace(go.Scatter(
-            x=gpr_cut.index, y=gpr_cut, name=gpr_col_use,
+        fig_gpr_sub.add_trace(go.Scatter(x=gpr_cut.index, y=gpr_cut, name=gpr_col_use,
             line=dict(color=ORANGE, width=1.5),
             fill="tozeroy", fillcolor="rgba(245,166,35,0.06)"))
-
-        # Marker eventi nel range visualizzato
         for ym, label in GPR_EVENTS.items():
             try:
                 ev_date = pd.Timestamp(ym + "-01")
                 if ev_date >= gpr_cut.index.min() and ev_date <= gpr_cut.index.max():
                     fig_gpr_sub.add_vline(x=ev_date, line_dash="dot",
                         line_color=RED, line_width=0.8,
-                        annotation_text=label,
-                        annotation_position="top",
+                        annotation_text=label, annotation_position="top",
                         annotation_font=dict(size=7, color=RED),
                         annotation_textangle=-90)
             except Exception:
                 pass
-
         lg = base_layout(f"GPR Index ({gpr_col_use}) — eventi geopolitici rilevanti", 200)
         lg["yaxis"] = dict(gridcolor=GRID_COL, tickfont=dict(size=8, color=MUTED))
         lg["showlegend"] = False
         fig_gpr_sub.update_layout(**lg)
         st.plotly_chart(fig_gpr_sub, use_container_width=True, config={"displayModeBar": False})
+
     with st.expander("📋 Dettaglio Score — tutti gli indicatori", expanded=False):
         rows_html = ""
         for pillar_name, pcol, ind_dict in [
@@ -1269,20 +1223,34 @@ with tab2:
             fig = go.Figure()
             fig.add_trace(go.Scatter(x=mr_d.index, y=mr_d,
                 line=dict(color=BLUE, width=2), name="M2 Reale"))
-            add_percentile_bands(fig, mr, invert=False)  # alto M2 = bull
+            add_percentile_bands(fig, mr, invert=False)
             fig.update_layout(**base_layout("M2 Reale (CPI deflazionato)", 230))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-        # Velocity
-        vel = m2_velocity(fred_data["M2"], fred_data["GDP"])
-        if not vel.empty:
-            vel_d = fbd(vel, cut)
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=vel_d.index, y=vel_d,
-                line=dict(color=PURPLE, width=2), name="Velocity"))
-            add_percentile_bands(fig, vel, invert=False)  # alta velocity = bull
-            fig.update_layout(**base_layout("Velocity — GDP/M2", 220))
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        # Velocity — v1.4.2: versione massima robustezza
+        try:
+            _m2v  = fred_data["M2"].copy()
+            _gdpv = fred_data["GDP"].copy()
+            _m2v.index  = pd.to_datetime(_m2v.index).normalize()
+            _gdpv.index = pd.to_datetime(_gdpv.index).normalize()
+            _m2v  = _m2v.resample("MS").last().ffill()
+            _gdpv = _gdpv.resample("MS").last().ffill()
+            _m2v, _gdpv = _m2v.align(_gdpv, join="inner")
+            if len(_m2v) > 4:
+                _vel = (_gdpv / _m2v).dropna()
+                _cutoff_v = pd.Timestamp.now() - pd.DateOffset(years=years_display)
+                _vel_d = _vel[_vel.index >= _cutoff_v]
+                if len(_vel_d) > 2:
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(
+                        x=list(_vel_d.index.strftime("%Y-%m-%d")),
+                        y=list(_vel_d.values.astype(float)),
+                        line=dict(color=PURPLE, width=2), name="Velocity"))
+                    add_percentile_bands(fig, _vel, invert=False)
+                    fig.update_layout(**base_layout("Velocity — GDP/M2", 220))
+                    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        except Exception as _e:
+            st.caption(f"Velocity errore: {_e}")
 
         # Real Yield
         ry = fred_data["REALYIELD"]
@@ -1293,30 +1261,30 @@ with tab2:
             fig.add_trace(go.Scatter(x=ry_d.index, y=ry_d,
                 line=dict(color=ORANGE, width=2), fill="tozeroy",
                 fillcolor="rgba(245,166,35,0.07)", name="Real Yield"))
-            add_percentile_bands(fig, ry, invert=True)   # alto yield = bear
+            add_percentile_bands(fig, ry, invert=True)
             fig.update_layout(**base_layout("Real Yield 10Y — TIPS (%)", 230))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-        # HY OAS — FIX v1.4: in basis points (x100)
+        # HY OAS
         hy = fred_data["HY_OAS"]
         if not hy.empty:
-            hy_bp  = hy * 100
-            hy_d   = fbd(hy_bp, cut)
+            hy_bp = hy * 100
+            hy_d  = fbd(hy_bp, cut)
             fig = go.Figure()
             fig.add_trace(go.Scatter(x=hy_d.index, y=hy_d,
                 line=dict(color=RED, width=2), fill="tozeroy",
                 fillcolor="rgba(255,77,109,0.07)", name="HY OAS (bp)"))
-            add_percentile_bands(fig, hy_bp, invert=True)  # alto spread = bear
+            add_percentile_bands(fig, hy_bp, invert=True)
             fig.update_layout(**base_layout("HY OAS Spread (bp)  —  FIX v1.4: BAMLH0A0HYM2 × 100", 230))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-        # STLFSI — NUOVO v1.4
+        # STLFSI
         stlfsi = fred_data["STLFSI"]
         if not stlfsi.empty:
             st_d = fbd(stlfsi, cut)
             fig = go.Figure()
             fig.add_hrect(y0=-4, y1=0, fillcolor="rgba(0,245,196,0.04)", line_width=0)
-            fig.add_hrect(y0=0, y1=6,  fillcolor="rgba(255,77,109,0.04)", line_width=0)
+            fig.add_hrect(y0=0,  y1=6, fillcolor="rgba(255,77,109,0.04)", line_width=0)
             fig.add_hline(y=0, line_dash="solid", line_color=ORANGE, line_width=1.5,
                 annotation_text="Neutro", annotation_font=dict(color=ORANGE, size=9))
             fig.add_trace(go.Scatter(x=st_d.index, y=st_d,
@@ -1326,7 +1294,7 @@ with tab2:
                 "St. Louis Financial Stress Index (STLFSI)  neg = nessuno stress  pos = stress elevato", 220))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-        # MOVE INDEX — v1.4.1: spostato da Geopolitico → Monetario
+        # MOVE INDEX
         move = mkt_data.get("MOVE")
         if move is not None and not move.empty:
             move_d = fbd(move, cut)
@@ -1334,20 +1302,37 @@ with tab2:
             fig.add_trace(go.Scatter(x=move_d.index, y=move_d,
                 line=dict(color=PURPLE, width=2), fill="tozeroy",
                 fillcolor="rgba(187,136,255,0.07)", name="MOVE"))
-            add_percentile_bands(fig, move, invert=True)   # alta vol tassi = bear
+            add_percentile_bands(fig, move, invert=True)
             fig.update_layout(**base_layout(
                 "MOVE Index — Bond Vol implicita Treasury (v1.4.1: da Geo → Monetario)", 230))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-        # M2/PIL
-        mg = m2_gdp_ratio(fred_data["M2"], fred_data["GDP"])
-        if not mg.empty:
-            mg_d = fbd(mg.resample("M").interpolate(), cut)
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=mg_d.index, y=mg_d,
-                line=dict(color=CYAN, width=2), name="M2/PIL"))
-            fig.update_layout(**base_layout("M2/PIL Ratio", 220))
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        # M2/PIL — v1.4.2: versione massima robustezza
+        try:
+            _m2r = fred_data["M2"].copy()
+            _gdpr = fred_data["GDP"].copy()
+            _m2r.index  = pd.to_datetime(_m2r.index).normalize()
+            _gdpr.index = pd.to_datetime(_gdpr.index).normalize()
+            # Ricampiona entrambi a inizio mese
+            _m2r  = _m2r.resample("MS").last().ffill()
+            _gdpr = _gdpr.resample("MS").last().ffill()
+            # Allinea su indice comune mensile
+            _m2r, _gdpr = _m2r.align(_gdpr, join="inner")
+            if len(_m2r) > 4:
+                _ratio = (_m2r / _gdpr).dropna()
+                # Filtra per finestra temporale senza usare fbd/safe_ts
+                _cutoff = pd.Timestamp.now() - pd.DateOffset(years=years_display)
+                _ratio_d = _ratio[_ratio.index >= _cutoff]
+                if len(_ratio_d) > 2:
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(
+                        x=list(_ratio_d.index.strftime("%Y-%m-%d")),
+                        y=list(_ratio_d.values.astype(float)),
+                        line=dict(color=CYAN, width=2), name="M2/PIL"))
+                    fig.update_layout(**base_layout("M2/PIL Ratio", 220))
+                    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        except Exception as _e:
+            st.caption(f"M2/PIL errore: {_e}")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 3 — ECONOMIA REALE
@@ -1358,18 +1343,13 @@ with tab3:
         st.markdown(tile_html("SCORE PILASTRO B", f"{sB:.0f}/100", "Economia Reale",
             score_cc(sB), score_pill(sB)), unsafe_allow_html=True)
 
-        # PMI GAUGE VISIVO — recuperato da v1.0
         pmi_val = indB.get("PMI Composito", {}).get("value", "N/A")
         try:
             pv = float(pmi_val)
-            if pv >= 52:
-                pmi_col, pmi_status = CYAN, "ESPANSIONE"
-            elif pv >= 50:
-                pmi_col, pmi_status = LIME, "NEUTRO+"
-            elif pv >= 48:
-                pmi_col, pmi_status = ORANGE, "NEUTRO-"
-            else:
-                pmi_col, pmi_status = RED, "CONTRAZIONE"
+            if pv >= 52:   pmi_col, pmi_status = CYAN,   "ESPANSIONE"
+            elif pv >= 50: pmi_col, pmi_status = LIME,   "NEUTRO+"
+            elif pv >= 48: pmi_col, pmi_status = ORANGE, "NEUTRO-"
+            else:          pmi_col, pmi_status = RED,    "CONTRAZIONE"
             pmi_display = f"{pv:.1f}"
         except Exception:
             pmi_col, pmi_status, pmi_display = MUTED, "N/A", "N/A"
@@ -1387,11 +1367,9 @@ with tab3:
         </div>""", unsafe_allow_html=True)
 
         for iname, idata in indB.items():
-            if iname == "PMI Composito":
-                continue
+            if iname == "PMI Composito": continue
             sc = idata.get("score")
-            if sc is None:
-                continue
+            if sc is None: continue
             st.markdown(tile_html(iname.upper(),
                 idata["value"] + " " + idata["unit"],
                 "Score: " + str(round(sc)) + "/100 · " + idata["desc"],
@@ -1400,7 +1378,6 @@ with tab3:
     with t3c2:
         cut = cutoff_date(years_display)
 
-        # INDPRO YoY
         if not fred_data["INDPRO"].empty:
             ip_yoy = yoy(fred_data["INDPRO"])
             ip_d   = fbd(ip_yoy, cut)
@@ -1409,11 +1386,10 @@ with tab3:
             fig.add_trace(go.Scatter(x=ip_d.index, y=ip_d,
                 line=dict(color=CYAN, width=2), fill="tozeroy",
                 fillcolor="rgba(0,245,196,0.07)", name="INDPRO YoY"))
-            add_percentile_bands(fig, ip_yoy, invert=False)  # alta produzione = bull
+            add_percentile_bands(fig, ip_yoy, invert=False)
             fig.update_layout(**base_layout("Produzione Industriale YoY (%)", 230))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-        # Unemployment + NFP side by side
         col_u, col_n = st.columns(2)
         with col_u:
             if not fred_data["UNRATE"].empty:
@@ -1421,7 +1397,7 @@ with tab3:
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(x=ur_d.index, y=ur_d,
                     line=dict(color=ORANGE, width=2), name="UNRATE"))
-                add_percentile_bands(fig, fred_data["UNRATE"], invert=True)  # alta disoc = bear
+                add_percentile_bands(fig, fred_data["UNRATE"], invert=True)
                 fig.update_layout(**base_layout("Disoccupazione (%)", 220))
                 st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
         with col_n:
@@ -1436,7 +1412,6 @@ with tab3:
                 fig.update_layout(**base_layout("NFP variazione 3M (K)", 220))
                 st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-        # Core PCE YoY
         if not fred_data["PCE"].empty:
             pce_yoy = yoy(fred_data["PCE"])
             pce_d   = fbd(pce_yoy, cut)
@@ -1449,7 +1424,6 @@ with tab3:
             fig.update_layout(**base_layout("Core PCE YoY (%) — ottimale vicino 2%", 230))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-        # Retail Sales
         if not fred_data["RETAIL"].empty:
             ret_yoy = yoy(fred_data["RETAIL"])
             ret_d   = fbd(ret_yoy, cut)
@@ -1472,8 +1446,7 @@ with tab4:
             score_cc(sC), score_pill(sC)), unsafe_allow_html=True)
         for iname, idata in indC.items():
             sc = idata.get("score")
-            if sc is None:
-                continue
+            if sc is None: continue
             st.markdown(tile_html(iname.upper(),
                 idata["value"] + " " + idata["unit"],
                 "Score: " + str(round(sc)) + "/100 · " + idata["desc"],
@@ -1505,8 +1478,7 @@ with tab4:
             score_cc(sD), score_pill(sD)), unsafe_allow_html=True)
         for iname, idata in indD.items():
             sc = idata.get("score")
-            if sc is None:
-                continue
+            if sc is None: continue
             st.markdown(tile_html(iname.upper(),
                 idata["value"] + " " + idata["unit"],
                 "Score: " + str(round(sc)) + "/100 · " + idata["desc"],
@@ -1519,7 +1491,7 @@ with tab4:
             fig.add_trace(go.Scatter(x=tcu_d.index, y=tcu_d,
                 line=dict(color=BLUE, width=2), fill="tozeroy",
                 fillcolor="rgba(77,166,255,0.07)", name="TCU"))
-            add_percentile_bands(fig, fred_data["TCU"], invert=False)  # alto TCU = bull
+            add_percentile_bands(fig, fred_data["TCU"], invert=False)
             fig.update_layout(**base_layout("Capacity Utilization (%) — con bande 25p/75p", 240))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
         if not fred_data["ULC"].empty:
@@ -1553,13 +1525,11 @@ with tab5:
             score_cc(sE), score_pill(sE)), unsafe_allow_html=True)
         for iname, idata in indE.items():
             sc = idata.get("score")
-            if sc is None:
-                continue
+            if sc is None: continue
             st.markdown(tile_html(iname.upper(),
                 idata["value"] + " " + idata["unit"],
                 "Score: " + str(round(sc)) + "/100 · " + idata["desc"],
                 score_cc(sc), score_pill(sc)), unsafe_allow_html=True)
-        # Nota spostamento MOVE
         st.markdown(
             f'<div style="font-size:0.55rem;color:{MUTED};border:1px solid {GRID_COL};'
             f'border-radius:4px;padding:8px 10px;margin-top:8px;line-height:1.6">'
@@ -1570,44 +1540,35 @@ with tab5:
     with t5c2:
         cut = cutoff_date(years_display)
 
-        # ── GPR INDEX — GRAFICO PRINCIPALE CON EVENTI ──────────────────────
         if gpr_df is not None and not gpr_df.empty:
             st.markdown('<div class="section-label">GPR Index — Geopolitical Risk (Caldara & Iacoviello)</div>',
                 unsafe_allow_html=True)
-
-            # Costruisci figura con due tracce: GPRH (storico) + GPR (recente)
             fig_gpr = make_subplots(rows=2, cols=1, row_heights=[0.7, 0.3],
                 shared_xaxes=True, vertical_spacing=0.04)
 
-            gpr_h = gpr_df.set_index("month")["GPRH"].dropna()
+            gpr_h     = gpr_df.set_index("month")["GPRH"].dropna()
             gpr_h_cut = fbd(gpr_h, cutoff_date(max(years_display, 5)))
 
-            # Sotto-componenti se disponibili
             if "GPRHT" in gpr_df.columns:
-                gpr_ht = gpr_df.set_index("month")["GPRHT"].dropna()
-                gpr_ht_cut = fbd(gpr_ht, cutoff_date(max(years_display, 5)))
+                gpr_ht_cut = fbd(gpr_df.set_index("month")["GPRHT"].dropna(),
+                    cutoff_date(max(years_display, 5)))
                 fig_gpr.add_trace(go.Scatter(x=gpr_ht_cut.index, y=gpr_ht_cut,
                     name="Threats", line=dict(color=ORANGE, width=1, dash="dot"),
                     opacity=0.6), row=1, col=1)
             if "GPRHA" in gpr_df.columns:
-                gpr_ha = gpr_df.set_index("month")["GPRHA"].dropna()
-                gpr_ha_cut = fbd(gpr_ha, cutoff_date(max(years_display, 5)))
+                gpr_ha_cut = fbd(gpr_df.set_index("month")["GPRHA"].dropna(),
+                    cutoff_date(max(years_display, 5)))
                 fig_gpr.add_trace(go.Scatter(x=gpr_ha_cut.index, y=gpr_ha_cut,
                     name="Acts", line=dict(color=RED, width=1, dash="dot"),
                     opacity=0.6), row=1, col=1)
 
-            # Traccia principale GPRH
             fig_gpr.add_trace(go.Scatter(x=gpr_h_cut.index, y=gpr_h_cut,
                 name="GPRH", line=dict(color=CYAN, width=2),
                 fill="tozeroy", fillcolor="rgba(0,245,196,0.05)"), row=1, col=1)
-
-            # Linea media storica
-            fig_gpr.add_hline(y=100, line_dash="dot", line_color=MUTED,
-                line_width=1, row=1, col=1,
-                annotation_text="Media 100", annotation_position="right",
+            fig_gpr.add_hline(y=100, line_dash="dot", line_color=MUTED, line_width=1,
+                row=1, col=1, annotation_text="Media 100", annotation_position="right",
                 annotation_font=dict(color=MUTED, size=8))
 
-            # Marker eventi verticali
             ev_added = []
             for ym, label in GPR_EVENTS.items():
                 try:
@@ -1615,26 +1576,21 @@ with tab5:
                     if ev_date >= gpr_h_cut.index.min() and ev_date <= gpr_h_cut.index.max():
                         if label not in ev_added:
                             fig_gpr.add_vline(x=ev_date, line_dash="dot",
-                                line_color="rgba(255,77,109,0.5)", line_width=1,
-                                row=1, col=1)
-                            fig_gpr.add_annotation(
-                                x=ev_date, y=gpr_h_cut.max() * 0.98,
+                                line_color="rgba(255,77,109,0.5)", line_width=1, row=1, col=1)
+                            fig_gpr.add_annotation(x=ev_date, y=gpr_h_cut.max() * 0.98,
                                 text=label, showarrow=False,
                                 font=dict(size=6.5, color=RED),
-                                textangle=-90, xanchor="left",
-                                row=1, col=1)
+                                textangle=-90, xanchor="left", row=1, col=1)
                             ev_added.append(label)
                 except Exception:
                     pass
 
-            # Secondo subplot: GPR recente (post 1985) se disponibile
             if "GPR" in gpr_df.columns and gpr_df["GPR"].notna().sum() > 20:
-                gpr_r = gpr_df.set_index("month")["GPR"].dropna()
-                gpr_r_cut = fbd(gpr_r, cutoff_date(max(years_display, 5)))
+                gpr_r_cut = fbd(gpr_df.set_index("month")["GPR"].dropna(),
+                    cutoff_date(max(years_display, 5)))
                 if not gpr_r_cut.empty:
                     fig_gpr.add_trace(go.Bar(x=gpr_r_cut.index, y=gpr_r_cut,
-                        name="GPR recente", marker_color=MAGENTA,
-                        opacity=0.5), row=2, col=1)
+                        name="GPR recente", marker_color=MAGENTA, opacity=0.5), row=2, col=1)
                     fig_gpr.add_hline(y=100, line_dash="dot", line_color=MUTED,
                         line_width=1, row=2, col=1)
 
@@ -1654,7 +1610,6 @@ with tab5:
             )
             st.plotly_chart(fig_gpr, use_container_width=True, config={"displayModeBar": False})
 
-            # Info ultimo valore
             last_gpr  = float(gpr_df.set_index("month")["GPRH"].dropna().iloc[-1])
             last_date = gpr_df.set_index("month")["GPRH"].dropna().index[-1].strftime("%b %Y")
             gpr_pct   = float((gpr_df.set_index("month")["GPRH"].dropna() < last_gpr).mean() * 100)
@@ -1675,7 +1630,6 @@ with tab5:
         else:
             st.info("GPR Index non disponibile. Carica il CSV dalla sidebar per abilitare il grafico.")
 
-        # Gold
         gold = mkt_data.get("GOLD")
         if gold is not None and not gold.empty:
             gold_d = fbd(gold, cut)
@@ -1694,7 +1648,7 @@ with tab5:
                 fig.add_trace(go.Scatter(x=oil_d.index, y=oil_d,
                     line=dict(color=ORANGE, width=2), fill="tozeroy",
                     fillcolor="rgba(245,166,35,0.07)", name="WTI"))
-                add_percentile_bands(fig, oil, invert=True)   # alto petrolio = rischio inflattivo = bear
+                add_percentile_bands(fig, oil, invert=True)
                 fig.update_layout(**base_layout("Oil WTI (USD/bbl)", 230))
                 st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
         with col_eem:
@@ -1713,7 +1667,7 @@ with tab5:
             fig = go.Figure()
             fig.add_trace(go.Scatter(x=dxy_d.index, y=dxy_d,
                 line=dict(color=BLUE, width=2), name="DXY"))
-            add_percentile_bands(fig, dxy, invert=True)   # alto DXY = stress EM = bear
+            add_percentile_bands(fig, dxy, invert=True)
             fig.update_layout(**base_layout("Dollar Index (DXY) — lookback 30Y", 220))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
@@ -1736,17 +1690,12 @@ with tab6:
         bt = build_regime_backtest(hist_df_bt) if not hist_df_bt.empty else None
 
     if bt:
-        REGIME_COLS = {
-            "GOLDILOCKS":    CYAN,
-            "INFL.BOOM":     ORANGE,
-            "STAGFLATION":   RED,
-            "DISINFL.BUST":  BLUE,
-        }
+        REGIME_COLS = {"GOLDILOCKS": CYAN, "INFL.BOOM": ORANGE,
+                       "STAGFLATION": RED, "DISINFL.BUST": BLUE}
         ASSETS = ["SPY", "TLT", "GLD", "GSG"]
         ASSET_NAMES = {"SPY": "Equity (SPY)", "TLT": "Bond LT (TLT)",
                        "GLD": "Gold (GLD)",   "GSG": "Commodity (GSG)"}
 
-        # Cards per regime
         cols = st.columns(4)
         for i, (regime, rc) in enumerate(REGIME_COLS.items()):
             with cols[i]:
@@ -1766,7 +1715,6 @@ with tab6:
                   ])}
                 </div>""", unsafe_allow_html=True)
 
-        # Heatmap rendimenti medi
         st.markdown('<div class="section-label">Heatmap Rendimenti Medi Mensili per Regime</div>',
             unsafe_allow_html=True)
         heat_data, heat_labels = [], []
@@ -1776,14 +1724,11 @@ with tab6:
             heat_labels.append(regime)
 
         fig_heat = go.Figure(data=go.Heatmap(
-            z=heat_data,
-            x=[ASSET_NAMES[a] for a in ASSETS],
-            y=heat_labels,
+            z=heat_data, x=[ASSET_NAMES[a] for a in ASSETS], y=heat_labels,
             colorscale=[[0,"#ff4d6d"],[0.5,"#1c2a3a"],[1,"#00f5c4"]],
             zmid=0,
             text=[[f"{v:+.2f}%" for v in row] for row in heat_data],
-            texttemplate="%{text}",
-            textfont=dict(size=11, family="Syne"),
+            texttemplate="%{text}", textfont=dict(size=11, family="Syne"),
             showscale=True,
         ))
         lheat = base_layout("Rendimento Medio Mensile (%) per Regime", 300)
@@ -1792,25 +1737,19 @@ with tab6:
         fig_heat.update_layout(**lheat)
         st.plotly_chart(fig_heat, use_container_width=True, config={"displayModeBar": False})
 
-        # Regime distribution timeline
         reg_ser = bt.get("_regime_series")
         if reg_ser is not None:
             st.markdown('<div class="section-label">Distribuzione Regime nel Tempo</div>',
                 unsafe_allow_html=True)
             reg_cut = fbd(reg_ser, cutoff_date(max(years_display, 10)))
-            regime_num = reg_cut.map({
-                "GOLDILOCKS": 3, "INFL.BOOM": 2, "STAGFLATION": 1, "DISINFL.BUST": 0
-            })
+            regime_num = reg_cut.map({"GOLDILOCKS": 3, "INFL.BOOM": 2,
+                                      "STAGFLATION": 1, "DISINFL.BUST": 0})
             fig_rt = go.Figure()
-            for reg_name, rval, rc in [
-                ("GOLDILOCKS", 3, CYAN), ("INFL.BOOM", 2, ORANGE),
-                ("STAGFLATION", 1, RED), ("DISINFL.BUST", 0, BLUE),
-            ]:
+            for reg_name, rval, rc in [("GOLDILOCKS",3,CYAN),("INFL.BOOM",2,ORANGE),
+                                        ("STAGFLATION",1,RED),("DISINFL.BUST",0,BLUE)]:
                 mask = regime_num == rval
-                fig_rt.add_trace(go.Bar(
-                    x=regime_num[mask].index, y=[1]*mask.sum(),
-                    marker_color=rc, name=reg_name, opacity=0.7,
-                ))
+                fig_rt.add_trace(go.Bar(x=regime_num[mask].index, y=[1]*mask.sum(),
+                    marker_color=rc, name=reg_name, opacity=0.7))
             lrt = base_layout("Regime Storico (barre mensili)", 200)
             lrt["barmode"] = "stack"
             lrt["yaxis"] = dict(visible=False)
@@ -1819,7 +1758,6 @@ with tab6:
             fig_rt.update_layout(**lrt)
             st.plotly_chart(fig_rt, use_container_width=True, config={"displayModeBar": False})
 
-        # Regime corrente highlight
         st.markdown(f"""
         <div style="background:{PAPER_BG};border:1px solid {regime_color};border-radius:4px;
                     padding:12px 18px;margin-top:8px">
@@ -1837,7 +1775,7 @@ with tab6:
 # TAB 7 — METODOLOGIA
 # ─────────────────────────────────────────────────────────────────────────────
 with tab7:
-    st.markdown('<div class="section-label">Macro Core Engine v1.4 — Note Metodologiche</div>',
+    st.markdown('<div class="section-label">Macro Core Engine v1.4.2 — Note Metodologiche</div>',
         unsafe_allow_html=True)
 
     col_m1, col_m2 = st.columns(2)
@@ -1852,8 +1790,6 @@ with tab7:
             <b style="color:{ORANGE}">Percentile 50</b> = mediana storica = neutro<br>
             <b style="color:{LIME}">Percentile 100</b> = valore ai massimi storici<br><br>
             Indicatori bearish (Real Yield, Stress, HY OAS) vengono invertiti (100 - p).
-            Il metodo expanding cattura tutti i bear market passati correttamente,
-            a differenza di una finestra rolling fissa.
           </div>
         </div>""", unsafe_allow_html=True)
 
@@ -1862,7 +1798,7 @@ with tab7:
           <div class="metric-label">ARCHITETTURA DEI PILASTRI</div>
           <div style="font-size:0.65rem;color:{TEXT_COL};line-height:1.8;margin-top:8px">
             <b style="color:{CYAN}">A · Monetario (20%)</b><br>
-            M2/PIL · M2 Reale · Velocity · Real Yield · HY OAS · STLFSI · <b>MOVE</b><br><br>
+            M2/PIL · M2 Reale · Velocity · Real Yield · HY OAS · STLFSI · MOVE<br><br>
             <b style="color:{LIME}">B · Economia Reale (30%)</b><br>
             PMI Composito · INDPRO YoY · Disoccupazione D3M · NFP D3M · Core PCE YoY<br><br>
             <b style="color:{ORANGE}">C · Fiscale (15%)</b><br>
@@ -1870,7 +1806,7 @@ with tab7:
             <b style="color:{BLUE}">D · Produttivo (15%)</b><br>
             Capacity Utilization · ULC YoY · Output Gap · Produttivita YoY<br><br>
             <b style="color:{MAGENTA}">E · Geopolitico (20%)</b><br>
-            Oil WTI · EEM 3M · DXY · <b>GPR Index</b> (se CSV caricato)
+            Oil WTI · EEM 3M · DXY · GPR Index (se CSV caricato)
           </div>
         </div>""", unsafe_allow_html=True)
 
@@ -1879,7 +1815,6 @@ with tab7:
         <div class="metric-tile" style="margin-bottom:12px">
           <div class="metric-label">REGIME CLASSIFICATION</div>
           <div style="font-size:0.65rem;color:{TEXT_COL};line-height:1.8;margin-top:8px">
-            Il regime dipende da due asse ortogonali:<br>
             <b style="color:{CYAN}">Growth Score</b> = media(sB, sD)<br>
             <b style="color:{ORANGE}">Inflation Proxy</b> = 100 - sA<br><br>
             <b style="color:{CYAN}">GOLDILOCKS</b>: growth &ge;50 · infl &lt;50<br>
@@ -1894,35 +1829,28 @@ with tab7:
           <div class="metric-label">METRICHE SINTETICHE</div>
           <div style="font-size:0.65rem;color:{TEXT_COL};line-height:1.8;margin-top:8px">
             <b style="color:{BLUE}">Macro Breadth</b>: % pilastri con score &gt;50<br>
-            100% = tutti bullish · 0% = tutti bearish<br><br>
             <b style="color:{MAGENTA}">Regime Confidence</b>: media |score - 50|<br>
-            Alto = regime netto · Basso = regime ambiguo<br><br>
-            <b style="color:{CYAN}">Regime Persistence</b>: std dev rolling 6M<br>
-            Bassa = regime stabile · Alta = in transizione
+            <b style="color:{CYAN}">Regime Persistence</b>: std dev rolling 6M
           </div>
         </div>""", unsafe_allow_html=True)
 
         st.markdown(f"""
         <div class="metric-tile">
-          <div class="metric-label">FIX v1.4 — CHANGELOG</div>
+          <div class="metric-label">CHANGELOG</div>
           <div style="font-size:0.62rem;color:{TEXT_COL};line-height:1.9;margin-top:8px">
-            <span style="color:{CYAN}">BUG</span> HY OAS: unita corretta (x100 = bp)<br>
-            <span style="color:{CYAN}">BUG</span> Serie storica: percentile expanding<br>
-            <span style="color:{CYAN}">BUG</span> Pesi storico allineati al live<br>
-            <span style="color:{CYAN}">BUG</span> PMI card mostra valore numerico<br>
-            <span style="color:{LIME}">NEW</span> STLFSI Financial Stress Index<br>
-            <span style="color:{LIME}">NEW</span> PMI auto-FRED (ISM Mfg + Svc)<br>
-            <span style="color:{LIME}">NEW</span> Regime Persistence Metric<br>
-            <span style="color:{LIME}">NEW</span> Tab Backtest rendimenti per regime<br>
-            <span style="color:{LIME}">NEW</span> GPR Index + eventi storici (v1.4.1)<br>
-            <span style="color:{LIME}">NEW</span> GPR subplot sottopancia Tab1 (v1.4.1)<br>
-            <span style="color:{LIME}">NEW</span> File uploader CSV GPR sidebar (v1.4.1)<br>
-            <span style="color:{LIME}">NEW</span> Label L/C/LAG indicatori<br>
-            <span style="color:{ORANGE}">UX</span> MOVE → Pilastro A Monetario (v1.4.1)<br>
-            <span style="color:{ORANGE}">UX</span> DXY lookback 30Y (v1.4.1)<br>
-            <span style="color:{ORANGE}">UX</span> Radar chart recuperato da v1.0<br>
-            <span style="color:{ORANGE}">UX</span> PMI gauge visivo recuperato da v1.0<br>
-            <span style="color:{ORANGE}">UX</span> Bande percentile su grafici chiave<br>
-            <span style="color:{ORANGE}">UX</span> Tabella score in expander collassato
+            <span style="color:{CYAN}">BUG v1.4.2</span> m2_gdp_ratio: fix QS resample<br>
+            <span style="color:{CYAN}">BUG v1.4.2</span> m2_velocity: fix QS resample<br>
+            <span style="color:{CYAN}">BUG v1.4.2</span> M2/PIL grafico: sort_index + interpolate<br>
+            <span style="color:{LIME}">NEW v1.4.1</span> GPR Index + eventi storici<br>
+            <span style="color:{LIME}">NEW v1.4.1</span> GPR subplot sottopancia Tab1<br>
+            <span style="color:{LIME}">NEW v1.4.1</span> File uploader CSV GPR sidebar<br>
+            <span style="color:{ORANGE}">UX v1.4.1</span> MOVE → Pilastro A Monetario<br>
+            <span style="color:{ORANGE}">UX v1.4.1</span> DXY lookback 30Y<br>
+            <span style="color:{CYAN}">BUG v1.4</span> HY OAS unita corretta (x100 bp)<br>
+            <span style="color:{CYAN}">BUG v1.4</span> Serie storica: percentile expanding<br>
+            <span style="color:{LIME}">NEW v1.4</span> STLFSI Financial Stress Index<br>
+            <span style="color:{LIME}">NEW v1.4</span> PMI auto-FRED (ISM Mfg + Svc)<br>
+            <span style="color:{LIME}">NEW v1.4</span> Regime Persistence Metric<br>
+            <span style="color:{LIME}">NEW v1.4</span> Tab Backtest rendimenti per regime
           </div>
         </div>""", unsafe_allow_html=True)
