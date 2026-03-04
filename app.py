@@ -313,18 +313,28 @@ def fbd(s, cut):
     if s.empty: return s
     return s[s.index >= cut].dropna()
 
-def add_percentile_bands(fig, series, row=1, col=1):
-    """Bande 25°/75° percentile su grafici — recuperato da v1.0."""
+def add_percentile_bands(fig, series, row=1, col=1, invert=False):
+    """
+    Bande 25/75 percentile con colore coerente col segnale economico.
+    invert=False: alto=BULL  → 75p=CYAN, 25p=RED
+    invert=True:  alto=BEAR  → 75p=RED,  25p=CYAN
+    """
     if series is None or len(series.dropna()) < 20:
         return
     p25 = float(np.percentile(series.dropna(), 25))
     p75 = float(np.percentile(series.dropna(), 75))
-    fig.add_hline(y=p75, line_dash="dot", line_color=CYAN, line_width=1,
-                  annotation_text=f"75p {p75:.2f}", annotation_position="right",
-                  annotation_font=dict(color=CYAN, size=8), row=row, col=col)
-    fig.add_hline(y=p25, line_dash="dot", line_color=RED, line_width=1,
-                  annotation_text=f"25p {p25:.2f}", annotation_position="right",
-                  annotation_font=dict(color=RED, size=8), row=row, col=col)
+    high_col   = RED  if invert else CYAN
+    low_col    = CYAN if invert else RED
+    high_label = "75p stress" if invert else "75p bull"
+    low_label  = "25p bull"   if invert else "25p bear"
+    fig.add_hline(y=p75, line_dash="dot", line_color=high_col, line_width=1,
+                  annotation_text=f"{high_label} {p75:.2f}",
+                  annotation_position="right",
+                  annotation_font=dict(color=high_col, size=8), row=row, col=col)
+    fig.add_hline(y=p25, line_dash="dot", line_color=low_col, line_width=1,
+                  annotation_text=f"{low_label} {p25:.2f}",
+                  annotation_position="right",
+                  annotation_font=dict(color=low_col, size=8), row=row, col=col)
 
 
 # ============================================================================
@@ -1259,7 +1269,7 @@ with tab2:
             fig = go.Figure()
             fig.add_trace(go.Scatter(x=mr_d.index, y=mr_d,
                 line=dict(color=BLUE, width=2), name="M2 Reale"))
-            add_percentile_bands(fig, mr)
+            add_percentile_bands(fig, mr, invert=False)  # alto M2 = bull
             fig.update_layout(**base_layout("M2 Reale (CPI deflazionato)", 230))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
@@ -1270,7 +1280,7 @@ with tab2:
             fig = go.Figure()
             fig.add_trace(go.Scatter(x=vel_d.index, y=vel_d,
                 line=dict(color=PURPLE, width=2), name="Velocity"))
-            add_percentile_bands(fig, vel)
+            add_percentile_bands(fig, vel, invert=False)  # alta velocity = bull
             fig.update_layout(**base_layout("Velocity — GDP/M2", 220))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
@@ -1283,7 +1293,7 @@ with tab2:
             fig.add_trace(go.Scatter(x=ry_d.index, y=ry_d,
                 line=dict(color=ORANGE, width=2), fill="tozeroy",
                 fillcolor="rgba(245,166,35,0.07)", name="Real Yield"))
-            add_percentile_bands(fig, ry)
+            add_percentile_bands(fig, ry, invert=True)   # alto yield = bear
             fig.update_layout(**base_layout("Real Yield 10Y — TIPS (%)", 230))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
@@ -1296,7 +1306,7 @@ with tab2:
             fig.add_trace(go.Scatter(x=hy_d.index, y=hy_d,
                 line=dict(color=RED, width=2), fill="tozeroy",
                 fillcolor="rgba(255,77,109,0.07)", name="HY OAS (bp)"))
-            add_percentile_bands(fig, hy_bp)
+            add_percentile_bands(fig, hy_bp, invert=True)  # alto spread = bear
             fig.update_layout(**base_layout("HY OAS Spread (bp)  —  FIX v1.4: BAMLH0A0HYM2 × 100", 230))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
@@ -1324,7 +1334,7 @@ with tab2:
             fig.add_trace(go.Scatter(x=move_d.index, y=move_d,
                 line=dict(color=PURPLE, width=2), fill="tozeroy",
                 fillcolor="rgba(187,136,255,0.07)", name="MOVE"))
-            add_percentile_bands(fig, move)
+            add_percentile_bands(fig, move, invert=True)   # alta vol tassi = bear
             fig.update_layout(**base_layout(
                 "MOVE Index — Bond Vol implicita Treasury (v1.4.1: da Geo → Monetario)", 230))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
@@ -1399,7 +1409,7 @@ with tab3:
             fig.add_trace(go.Scatter(x=ip_d.index, y=ip_d,
                 line=dict(color=CYAN, width=2), fill="tozeroy",
                 fillcolor="rgba(0,245,196,0.07)", name="INDPRO YoY"))
-            add_percentile_bands(fig, ip_yoy)
+            add_percentile_bands(fig, ip_yoy, invert=False)  # alta produzione = bull
             fig.update_layout(**base_layout("Produzione Industriale YoY (%)", 230))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
@@ -1411,7 +1421,7 @@ with tab3:
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(x=ur_d.index, y=ur_d,
                     line=dict(color=ORANGE, width=2), name="UNRATE"))
-                add_percentile_bands(fig, fred_data["UNRATE"])
+                add_percentile_bands(fig, fred_data["UNRATE"], invert=True)  # alta disoc = bear
                 fig.update_layout(**base_layout("Disoccupazione (%)", 220))
                 st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
         with col_n:
@@ -1509,7 +1519,7 @@ with tab4:
             fig.add_trace(go.Scatter(x=tcu_d.index, y=tcu_d,
                 line=dict(color=BLUE, width=2), fill="tozeroy",
                 fillcolor="rgba(77,166,255,0.07)", name="TCU"))
-            add_percentile_bands(fig, fred_data["TCU"])
+            add_percentile_bands(fig, fred_data["TCU"], invert=False)  # alto TCU = bull
             fig.update_layout(**base_layout("Capacity Utilization (%) — con bande 25p/75p", 240))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
         if not fred_data["ULC"].empty:
@@ -1684,7 +1694,7 @@ with tab5:
                 fig.add_trace(go.Scatter(x=oil_d.index, y=oil_d,
                     line=dict(color=ORANGE, width=2), fill="tozeroy",
                     fillcolor="rgba(245,166,35,0.07)", name="WTI"))
-                add_percentile_bands(fig, oil)
+                add_percentile_bands(fig, oil, invert=True)   # alto petrolio = rischio inflattivo = bear
                 fig.update_layout(**base_layout("Oil WTI (USD/bbl)", 230))
                 st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
         with col_eem:
@@ -1703,7 +1713,7 @@ with tab5:
             fig = go.Figure()
             fig.add_trace(go.Scatter(x=dxy_d.index, y=dxy_d,
                 line=dict(color=BLUE, width=2), name="DXY"))
-            add_percentile_bands(fig, dxy)
+            add_percentile_bands(fig, dxy, invert=True)   # alto DXY = stress EM = bear
             fig.update_layout(**base_layout("Dollar Index (DXY) — lookback 30Y", 220))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
