@@ -1342,6 +1342,9 @@ with tab2:
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
         # M2/PIL
+      # DEBUG TEMPORANEO
+        _mg_test = m2_gdp_ratio(fred_data["M2"], fred_data["GDP"])
+        st.write(f"M2 len: {len(fred_data['M2'])}, GDP len: {len(fred_data['GDP'])}, ratio len: {len(_mg_test)}")
         mg = m2_gdp_ratio(fred_data["M2"], fred_data["GDP"])
         if not mg.empty:
             mg = mg.sort_index()
