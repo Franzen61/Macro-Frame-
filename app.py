@@ -406,10 +406,10 @@ def load_market_data():
 
 def m2_gdp_ratio(m2, gdp):
     if m2.empty or gdp.empty: return pd.Series(dtype=float)
-    m2_q = m2.resample("Q").last()
-    g, m = gdp.align(m2_q, join="inner")
+    m2_q  = m2.resample("QS").last()
+    gdp_q = gdp.resample("QS").last().ffill()
+    g, m  = gdp_q.align(m2_q, join="inner")
     return (m / g).dropna() if len(g) > 0 else pd.Series(dtype=float)
-
 def m2_real(m2, cpi):
     if m2.empty or cpi.empty: return pd.Series(dtype=float)
     m2_m = m2.resample("M").last()
@@ -420,8 +420,9 @@ def m2_real(m2, cpi):
 
 def m2_velocity(m2, gdp):
     if m2.empty or gdp.empty: return pd.Series(dtype=float)
-    m2_q = m2.resample("Q").last()
-    g, m = gdp.align(m2_q, join="inner")
+    m2_q  = m2.resample("QS").last()          # QS = inizio trimestre, allineato a GDP FRED
+    gdp_q = gdp.resample("QS").last().ffill()  # normalizza anche GDP a QS
+    g, m  = gdp_q.align(m2_q, join="inner")
     return (g / m).dropna() if len(g) > 0 else pd.Series(dtype=float)
 
 def yoy(series, periods=12):
