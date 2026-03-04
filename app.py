@@ -508,11 +508,17 @@ def score_monetary(d):
 
     vel = m2_velocity(d["M2"], d["GDP"])
     if not vel.empty:
-        vel_m = vel.sort_index().resample("M").interpolate(method="time")
-        s = pct_score(vel_m)
+        vel_m = vel.sort_index().resample("MS").last().reindex(
+            pd.date_range(vel.index.min(), vel.index.max(), freq="MS")
+        ).ffill().bfill()
+        # v1.4.3: invert=True — velocity bassa coincide con QE/bull market (post-2008, post-COVID)
+        # velocity alta coincide con restrizione monetaria/bear. Evidenza storica: r negativa con SPY.
+        # Score calcolato su vel_m mensile, stessa serie usata per il grafico
+        s = pct_score(vel_m, invert=True)
         scores.append(s)
         ind["Velocity (GDP/M2)"] = {"value": fmt(float(vel.iloc[-1]), 3), "score": s,
-                                     "series": vel, "unit": "x", "desc": "Velocita' moneta"}
+                                     "series": vel_m, "unit": "x",
+                                     "desc": "Velocita' moneta · bassa = liquidita' abbondante = bull"}
 
     ry = d["REALYIELD"].resample("M").last() if not d["REALYIELD"].empty else pd.Series(dtype=float)
     if not ry.empty:
@@ -763,7 +769,7 @@ def build_historical_composite():
         # v1.4.3: allineamento con scoring engine aggiornato
         # sA: Monetario — rimosso M2/PIL (ridondante con velocity), aggiunto velocity
         vel_h = (gdp / m2).dropna()
-        sA_h = (exp_pct(vel_h) + exp_pct(ry, inv=True) + exp_pct(hy, inv=True)) / 3
+        sA_h = (exp_pct(vel_h, inv=True) + exp_pct(ry, inv=True) + exp_pct(hy, inv=True)) / 3
         # sB: Econ.Reale — invariato
         sB_h = (exp_pct(ip_y) + exp_pct(ur3, inv=True) +
                 exp_pct(nfp3) + exp_pct(abs(pce_y - 2.0), inv=True)) / 4
