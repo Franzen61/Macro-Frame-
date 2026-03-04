@@ -1541,34 +1541,128 @@ with tab5:
         cut = cutoff_date(years_display)
 
         if gpr_df is not None and not gpr_df.empty:
-            st.markdown('<div class="section-label">GPR Index — Geopolitical Risk (Caldara & Iacoviello)</div>',
+            gpr_series  = gpr_df.set_index("month")["GPRH"].dropna()
+            gpr_threats = gpr_df.set_index("month")["GPRHT"].dropna() if "GPRHT" in gpr_df.columns else pd.Series(dtype=float)
+            gpr_acts    = gpr_df.set_index("month")["GPRHA"].dropna() if "GPRHA" in gpr_df.columns else pd.Series(dtype=float)
+            gpr_recent  = gpr_df.set_index("month")["GPR"].dropna()   if "GPR"  in gpr_df.columns else pd.Series(dtype=float)
+
+            last_gpr  = float(gpr_series.iloc[-1])
+            last_date = gpr_series.index[-1].strftime("%b %Y")
+            gpr_pct   = float((gpr_series < last_gpr).mean() * 100)
+            gpr_ma12  = gpr_series.rolling(12).mean()
+            gpr_col_v = RED if last_gpr > 150 else (ORANGE if last_gpr > 100 else CYAN)
+
+            # ── KPI bar ──────────────────────────────────────────────────────
+            st.markdown(f"""
+            <div style="background:{PAPER_BG};border:1px solid {gpr_col_v};border-radius:4px;
+                        padding:8px 16px;display:flex;align-items:center;gap:28px;margin-bottom:8px">
+              <div>
+                <div style="font-size:0.52rem;letter-spacing:2px;color:{MUTED}">GPRH ULTIMO ({last_date})</div>
+                <div style="font-family:Syne;font-size:1.6rem;font-weight:700;color:{gpr_col_v}">{last_gpr:.1f}</div>
+              </div>
+              <div style="font-size:0.6rem;color:{TEXT_COL};line-height:1.9">
+                Percentile storico (1900–oggi): <b style="color:{gpr_col_v}">{gpr_pct:.0f}°</b><br>
+                Media storica: <b>100</b> &nbsp;·&nbsp; Soglia stress: <b>150</b><br>
+                Media mobile 12m: <b style="color:{ORANGE}">{gpr_ma12.iloc[-1]:.1f}</b><br>
+                Fonte: Caldara &amp; Iacoviello (2022) · <a href="https://www.matteoiacoviello.com/gpr.htm"
+                style="color:{CYAN}">matteoiacoviello.com/gpr.htm</a>
+              </div>
+            </div>""", unsafe_allow_html=True)
+
+            # ── VISTA PANORAMICA 1900–OGGI ───────────────────────────────────
+            st.markdown('<div class="section-label">GPR Index — Panoramica storica 1900–oggi</div>',
                 unsafe_allow_html=True)
-            fig_gpr = make_subplots(rows=2, cols=1, row_heights=[0.7, 0.3],
+
+            fig_full = go.Figure()
+            fig_full.add_trace(go.Scatter(
+                x=gpr_series.index, y=gpr_series,
+                name="GPRH", line=dict(color=CYAN, width=1.2),
+                fill="tozeroy", fillcolor="rgba(0,245,196,0.04)"))
+            fig_full.add_trace(go.Scatter(
+                x=gpr_ma12.index, y=gpr_ma12,
+                name="MA 12m", line=dict(color=ORANGE, width=1.5, dash="dot")))
+            fig_full.add_hline(y=100, line_dash="dot", line_color=MUTED, line_width=1,
+                annotation_text="Media 100", annotation_position="right",
+                annotation_font=dict(color=MUTED, size=8))
+            fig_full.add_hline(y=150, line_dash="dot", line_color=RED, line_width=1,
+                annotation_text="Stress 150", annotation_position="right",
+                annotation_font=dict(color=RED, size=8))
+
+            # Raggruppa eventi vicini per evitare label sovrapposti (min 18 mesi distanza)
+            ev_sorted = sorted(GPR_EVENTS.items())
+            ev_plotted = []
+            for ym, label in ev_sorted:
+                try:
+                    ev_date = pd.Timestamp(ym + "-01")
+                    if ev_date < gpr_series.index.min() or ev_date > gpr_series.index.max():
+                        continue
+                    # Salta se troppo vicino all'ultimo evento plottato
+                    if ev_plotted and abs((ev_date - ev_plotted[-1]).days) < 540:
+                        continue
+                    y_val = float(gpr_series.asof(ev_date)) if ev_date in gpr_series.index or True else 100
+                    fig_full.add_vline(x=ev_date, line_dash="dot",
+                        line_color="rgba(255,77,109,0.35)", line_width=1)
+                    fig_full.add_annotation(
+                        x=ev_date, y=gpr_series.max() * 0.97,
+                        text=label, showarrow=False,
+                        font=dict(size=6, color=RED),
+                        textangle=-90, xanchor="left")
+                    ev_plotted.append(ev_date)
+                except Exception:
+                    pass
+
+            fig_full.update_layout(
+                height=320, paper_bgcolor=PAPER_BG, plot_bgcolor=PLOT_BG,
+                font=dict(family="Space Mono", color=TEXT_COL, size=9),
+                margin=dict(l=52, r=90, t=20, b=30),
+                hovermode="x unified",
+                legend=dict(orientation="h", y=-0.12, x=0.5, xanchor="center",
+                    font=dict(size=8, color=TEXT_COL), bgcolor="rgba(0,0,0,0)"),
+                xaxis=dict(gridcolor=GRID_COL, tickfont=dict(size=8, color=MUTED)),
+                yaxis=dict(gridcolor=GRID_COL, tickfont=dict(size=8, color=MUTED),
+                    title=dict(text="GPRH", font=dict(size=8, color=MUTED))),
+            )
+            st.plotly_chart(fig_full, use_container_width=True, config={"displayModeBar": False})
+
+            # ── VISTA RECENTE con Threats / Acts subplot ─────────────────────
+            st.markdown('<div class="section-label">GPR Index — Dettaglio recente (finestra selezionata)</div>',
+                unsafe_allow_html=True)
+
+            fig_gpr = make_subplots(rows=2, cols=1, row_heights=[0.65, 0.35],
                 shared_xaxes=True, vertical_spacing=0.04)
 
-            gpr_h     = gpr_df.set_index("month")["GPRH"].dropna()
-            gpr_h_cut = fbd(gpr_h, cutoff_date(max(years_display, 5)))
+            cut_gpr = cutoff_date(max(years_display, 5))
+            gpr_h_cut = fbd(gpr_series, cut_gpr)
+            ma12_cut  = fbd(gpr_ma12,   cut_gpr)
 
-            if "GPRHT" in gpr_df.columns:
-                gpr_ht_cut = fbd(gpr_df.set_index("month")["GPRHT"].dropna(),
-                    cutoff_date(max(years_display, 5)))
-                fig_gpr.add_trace(go.Scatter(x=gpr_ht_cut.index, y=gpr_ht_cut,
-                    name="Threats", line=dict(color=ORANGE, width=1, dash="dot"),
-                    opacity=0.6), row=1, col=1)
-            if "GPRHA" in gpr_df.columns:
-                gpr_ha_cut = fbd(gpr_df.set_index("month")["GPRHA"].dropna(),
-                    cutoff_date(max(years_display, 5)))
-                fig_gpr.add_trace(go.Scatter(x=gpr_ha_cut.index, y=gpr_ha_cut,
-                    name="Acts", line=dict(color=RED, width=1, dash="dot"),
-                    opacity=0.6), row=1, col=1)
+            if not gpr_threats.empty:
+                fig_gpr.add_trace(go.Scatter(
+                    x=fbd(gpr_threats, cut_gpr).index,
+                    y=fbd(gpr_threats, cut_gpr).values,
+                    name="Threats", line=dict(color=ORANGE, width=1, dash="dot"), opacity=0.7),
+                    row=1, col=1)
+            if not gpr_acts.empty:
+                fig_gpr.add_trace(go.Scatter(
+                    x=fbd(gpr_acts, cut_gpr).index,
+                    y=fbd(gpr_acts, cut_gpr).values,
+                    name="Acts", line=dict(color=RED, width=1, dash="dot"), opacity=0.7),
+                    row=1, col=1)
 
-            fig_gpr.add_trace(go.Scatter(x=gpr_h_cut.index, y=gpr_h_cut,
+            fig_gpr.add_trace(go.Scatter(
+                x=gpr_h_cut.index, y=gpr_h_cut,
                 name="GPRH", line=dict(color=CYAN, width=2),
                 fill="tozeroy", fillcolor="rgba(0,245,196,0.05)"), row=1, col=1)
+            fig_gpr.add_trace(go.Scatter(
+                x=ma12_cut.index, y=ma12_cut,
+                name="MA 12m", line=dict(color=ORANGE, width=1.5, dash="dot")), row=1, col=1)
             fig_gpr.add_hline(y=100, line_dash="dot", line_color=MUTED, line_width=1,
-                row=1, col=1, annotation_text="Media 100", annotation_position="right",
+                row=1, col=1, annotation_text="100", annotation_position="right",
                 annotation_font=dict(color=MUTED, size=8))
+            fig_gpr.add_hline(y=150, line_dash="dot", line_color=RED, line_width=1,
+                row=1, col=1, annotation_text="150", annotation_position="right",
+                annotation_font=dict(color=RED, size=8))
 
+            # Marker eventi nella finestra recente
             ev_added = []
             for ym, label in GPR_EVENTS.items():
                 try:
@@ -1577,7 +1671,7 @@ with tab5:
                         if label not in ev_added:
                             fig_gpr.add_vline(x=ev_date, line_dash="dot",
                                 line_color="rgba(255,77,109,0.5)", line_width=1, row=1, col=1)
-                            fig_gpr.add_annotation(x=ev_date, y=gpr_h_cut.max() * 0.98,
+                            fig_gpr.add_annotation(x=ev_date, y=gpr_h_cut.max() * 0.97,
                                 text=label, showarrow=False,
                                 font=dict(size=6.5, color=RED),
                                 textangle=-90, xanchor="left", row=1, col=1)
@@ -1585,21 +1679,22 @@ with tab5:
                 except Exception:
                     pass
 
-            if "GPR" in gpr_df.columns and gpr_df["GPR"].notna().sum() > 20:
-                gpr_r_cut = fbd(gpr_df.set_index("month")["GPR"].dropna(),
-                    cutoff_date(max(years_display, 5)))
+            # Subplot inferiore: GPR recente (bar)
+            if not gpr_recent.empty:
+                gpr_r_cut = fbd(gpr_recent, cut_gpr)
                 if not gpr_r_cut.empty:
-                    fig_gpr.add_trace(go.Bar(x=gpr_r_cut.index, y=gpr_r_cut,
+                    fig_gpr.add_trace(go.Bar(
+                        x=gpr_r_cut.index, y=gpr_r_cut,
                         name="GPR recente", marker_color=MAGENTA, opacity=0.5), row=2, col=1)
                     fig_gpr.add_hline(y=100, line_dash="dot", line_color=MUTED,
                         line_width=1, row=2, col=1)
 
             fig_gpr.update_layout(
-                height=440, paper_bgcolor=PAPER_BG, plot_bgcolor=PLOT_BG,
+                height=400, paper_bgcolor=PAPER_BG, plot_bgcolor=PLOT_BG,
                 font=dict(family="Space Mono", color=TEXT_COL, size=9),
-                margin=dict(l=52, r=80, t=30, b=30),
+                margin=dict(l=52, r=90, t=20, b=30),
                 hovermode="x unified",
-                legend=dict(orientation="h", y=-0.08, x=0.5, xanchor="center",
+                legend=dict(orientation="h", y=-0.1, x=0.5, xanchor="center",
                     font=dict(size=8, color=TEXT_COL), bgcolor="rgba(0,0,0,0)"),
                 xaxis=dict(gridcolor=GRID_COL, tickfont=dict(size=8, color=MUTED)),
                 xaxis2=dict(gridcolor=GRID_COL, tickfont=dict(size=8, color=MUTED)),
@@ -1610,25 +1705,41 @@ with tab5:
             )
             st.plotly_chart(fig_gpr, use_container_width=True, config={"displayModeBar": False})
 
-            last_gpr  = float(gpr_df.set_index("month")["GPRH"].dropna().iloc[-1])
-            last_date = gpr_df.set_index("month")["GPRH"].dropna().index[-1].strftime("%b %Y")
-            gpr_pct   = float((gpr_df.set_index("month")["GPRH"].dropna() < last_gpr).mean() * 100)
-            gpr_col_v = RED if last_gpr > 150 else (ORANGE if last_gpr > 100 else CYAN)
-            st.markdown(f"""
-            <div style="background:{PAPER_BG};border:1px solid {gpr_col_v};border-radius:4px;
-                        padding:8px 16px;display:flex;align-items:center;gap:20px">
-              <div>
-                <div style="font-size:0.52rem;letter-spacing:2px;color:{MUTED}">GPRH ULTIMO ({last_date})</div>
-                <div style="font-family:Syne;font-size:1.4rem;font-weight:700;color:{gpr_col_v}">{last_gpr:.1f}</div>
-              </div>
-              <div style="font-size:0.6rem;color:{TEXT_COL};line-height:1.7">
-                Percentile storico: <b style="color:{gpr_col_v}">{gpr_pct:.0f}°</b><br>
-                Media storica: 100 · Soglia stress: 150<br>
-                Fonte: Caldara & Iacoviello (2022)
-              </div>
-            </div>""", unsafe_allow_html=True)
+            # ── CORRELAZIONI GPR ─────────────────────────────────────────────
+            corr_items = []
+            for asset_name, asset_key, asset_src in [
+                ("Gold", "GOLD", "mkt"), ("Oil WTI", "OIL", "mkt"),
+                ("EEM", "EEM", "mkt"), ("HY OAS", "HY_OAS", "fred"),
+            ]:
+                try:
+                    s = (mkt_data.get(asset_key) if asset_src == "mkt" else fred_data.get(asset_key))
+                    if s is None or s.empty: continue
+                    s.index = pd.to_datetime(s.index).normalize()
+                    s_m = s.resample("MS").last()
+                    gpr_m = gpr_series.resample("MS").last()
+                    combined = pd.concat([gpr_m, s_m], axis=1).dropna()
+                    if len(combined) > 24:
+                        r = combined.iloc[:,0].corr(combined.iloc[:,1])
+                        corr_items.append((asset_name, r))
+                except Exception:
+                    pass
+
+            if corr_items:
+                st.markdown('<div class="section-label">Correlazione GPRH vs Asset (mensile, full history)</div>',
+                    unsafe_allow_html=True)
+                cols_corr = st.columns(len(corr_items))
+                for i, (aname, r) in enumerate(corr_items):
+                    col_r = RED if r > 0.3 else (CYAN if r < -0.3 else MUTED)
+                    with cols_corr[i]:
+                        st.markdown(f"""<div style="background:{PAPER_BG};border:1px solid {col_r};
+                            border-radius:4px;padding:6px 10px;text-align:center">
+                            <div style="font-size:0.5rem;color:{MUTED};letter-spacing:1px">{aname}</div>
+                            <div style="font-family:Syne;font-size:1.1rem;font-weight:700;color:{col_r}">{r:+.2f}</div>
+                            </div>""", unsafe_allow_html=True)
+
         else:
             st.info("GPR Index non disponibile. Carica il CSV dalla sidebar per abilitare il grafico.")
+
 
         gold = mkt_data.get("GOLD")
         if gold is not None and not gold.empty:
