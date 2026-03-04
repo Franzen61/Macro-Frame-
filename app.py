@@ -410,6 +410,7 @@ def m2_gdp_ratio(m2, gdp):
     gdp_q = gdp.resample("QS").last().ffill()
     g, m  = gdp_q.align(m2_q, join="inner")
     return (m / g).dropna() if len(g) > 0 else pd.Series(dtype=float)
+  
 def m2_real(m2, cpi):
     if m2.empty or cpi.empty: return pd.Series(dtype=float)
     m2_m = m2.resample("M").last()
