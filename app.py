@@ -1,8 +1,18 @@
 """
-MACRO CORE ENGINE v1.4.2
+MACRO CORE ENGINE v1.4.3
 ========================
 5-Pillar Macro Regime Monitor
 Companion: Settoriale · Commodity Supercycle · Bond Monitor · Equity Pulse
+
+v1.4.3 — audit scoring engine:
+  - PMI: formula lineare → pct_score expanding su serie ISM storica (confrontabile)
+  - Impulso Fiscale: invert corretto (False) — espansivo = bull breve termine
+  - HY OAS: pct_score calcolato in bp (uniformità, no ambiguità unità)
+  - Output Gap: rimosso Savitzky-Golay (lookforward bias) → rolling causale 36m
+  - Oil Geopolitico: livello assoluto → YoY change (distingue shock domanda/offerta)
+  - build_historical_composite: allineato con nuovo scoring engine
+  - M2/PIL rimosso da score (ridondante con Velocity) — solo grafico informativo
+  - EEM: formula lineare → pct_score expanding su rendimento 3M
 
 v1.4.2 — fix:
   - BUG FIX: m2_gdp_ratio e m2_velocity usano resample("QS") per allineamento
@@ -429,14 +439,15 @@ def yoy(series, periods=12):
     return series.pct_change(periods).mul(100).dropna()
 
 def output_gap_proxy(indpro):
+    """
+    Output gap proxy causale — nessun lookforward bias.
+    Usa rolling mean a 36 mesi (causale) come trend di lungo periodo.
+    Savitzky-Golay rimosso in v1.4.3: filtro simmetrico introduce lookforward bias
+    che invalida il backtest storico (il trend al mese T usava dati fino a T+N).
+    Rolling 36m: ogni punto usa solo dati passati → statisticamente valido.
+    """
     if indpro.empty or len(indpro) < 36: return pd.Series(dtype=float)
-    try:
-        from scipy.signal import savgol_filter
-        wl = min(61, len(indpro) - (1 if len(indpro) % 2 == 0 else 0))
-        if wl < 5: raise ValueError
-        trend = pd.Series(savgol_filter(indpro.values, wl, 2), index=indpro.index)
-    except Exception:
-        trend = indpro.rolling(36, min_periods=12).mean()
+    trend = indpro.rolling(36, min_periods=24).mean()
     return ((indpro - trend) / trend * 100).dropna()
 
 def pmi_auto_fred(ism_mfg, ism_svc):
@@ -512,11 +523,12 @@ def score_monetary(d):
 
     hy = d["HY_OAS"].resample("M").last() if not d["HY_OAS"].empty else pd.Series(dtype=float)
     if not hy.empty:
+        # v1.4.3: converte in bp prima del pct_score — uniformità e chiarezza
         hy_bp = hy * 100
-        s = pct_score(hy, invert=True)
+        s = pct_score(hy_bp, invert=True)
         scores.append(s)
         ind["HY OAS Spread"] = {"value": fmt(float(hy_bp.iloc[-1]), 0), "score": s,
-                                 "series": hy, "unit": "bp", "desc": "Spread HY · basso = no stress"}
+                                 "series": hy_bp, "unit": "bp", "desc": "Spread HY · basso = no stress"}
 
     stlfsi = d["STLFSI"].resample("M").last() if not d["STLFSI"].empty else pd.Series(dtype=float)
     if not stlfsi.empty:
@@ -546,10 +558,27 @@ def score_real_economy(d, pmi_override):
     pmi_source = "manuale" if pmi_override is not None else ("FRED ISM" if pmi_auto is not None else "N/A")
 
     if pmi is not None:
-        s = min(100, max(0, (pmi - 30) / (70 - 30) * 100))
+        # v1.4.3: pct_score su serie ISM storica — confrontabile con altri indicatori
+        ism_combined = pd.Series(dtype=float)
+        if not d.get("ISM_MFG", pd.Series()).empty and not d.get("ISM_SVC", pd.Series()).empty:
+            a = d["ISM_MFG"].resample("M").last()
+            b = d["ISM_SVC"].resample("M").last()
+            a, b = a.align(b, join="inner")
+            if len(a) > 0:
+                ism_combined = (a * 0.60 + b * 0.40)
+        elif not d.get("ISM_MFG", pd.Series()).empty:
+            ism_combined = d["ISM_MFG"].resample("M").last()
+        elif not d.get("ISM_SVC", pd.Series()).empty:
+            ism_combined = d["ISM_SVC"].resample("M").last()
+        if len(ism_combined) >= 20:
+            s = pct_score(ism_combined)
+        else:
+            # fallback: formula lineare solo se serie storica insufficiente
+            s = min(100, max(0, (pmi - 30) / (70 - 30) * 100))
         scores.append(s)
         ind["PMI Composito"] = {"value": fmt(pmi, 1), "score": round(s, 1),
-                                 "series": None, "unit": "",
+                                 "series": ism_combined if not ism_combined.empty else None,
+                                 "unit": "",
                                  "desc": f">52 exp · <48 contr · fonte: {pmi_source}"}
 
     if not d["INDPRO"].empty:
@@ -592,10 +621,14 @@ def score_fiscal(d):
     if not d["DEFICIT"].empty:
         impulse = d["DEFICIT"].diff(1).dropna()
         if not impulse.empty:
-            s = pct_score(impulse, invert=True)
+            # v1.4.3: invert=False — impulso espansivo (deficit crescente, valore più negativo)
+            # è stimolativo → bull per crescita nel breve. Penalizzare solo quando si contrae.
+            # Nota: FYFSGDA188S è deficit come % PIL con segno negativo → diff più negativo = più stimolo
+            s = pct_score(impulse, invert=False)
             scores.append(s)
             ind["Impulso Fiscale"] = {"value": fmt(float(impulse.iloc[-1]), 2), "score": s,
-                                       "series": impulse, "unit": "% PIL", "desc": "Delta deficit/PIL"}
+                                       "series": impulse, "unit": "% PIL",
+                                       "desc": "Delta deficit/PIL · espansivo = bull breve termine"}
         ind["Deficit/PIL"] = {"value": fmt(float(d["DEFICIT"].iloc[-1]), 1), "score": None,
                                "series": d["DEFICIT"], "unit": "% PIL", "desc": "Solo informativo"}
     if not d["DEBT_GDP"].empty:
@@ -640,11 +673,17 @@ def score_productive(d):
 def score_geopolitical(mkt, gpr_df=None):
     ind, scores = {}, []
     oil = mkt.get("OIL")
-    if oil is not None and len(oil) > 60:
-        s = pct_score(oil, invert=True)
-        scores.append(s)
-        ind["Oil (WTI)"] = {"value": fmt(float(oil.iloc[-1]), 1), "score": s,
-                             "series": oil, "unit": "$", "desc": "Petrolio · alto = rischio inflattivo"}
+    if oil is not None and len(oil) > 250:
+        # v1.4.3: YoY invece di livello assoluto — distingue shock da domanda (bull) vs
+        # shock da offerta/geopolitico (bear). Accelerazione YoY negativa = rischio.
+        oil_m = oil.resample("M").last()
+        oil_yoy = oil_m.pct_change(12).mul(100).dropna()
+        if len(oil_yoy) >= 20:
+            s = pct_score(oil_yoy, invert=True)  # spike YoY = rischio inflattivo/geo = bear
+            scores.append(s)
+            ind["Oil (WTI)"] = {"value": fmt(float(oil.iloc[-1]), 1), "score": s,
+                                 "series": oil_yoy, "unit": "$",
+                                 "desc": "Petrolio YoY · spike = rischio inflattivo/geo"}
     eem = mkt.get("EEM")
     if eem is not None and len(eem) > 63:
         # v1.4.3: percentile expanding su rendimento 3M — confrontabile con gli altri indicatori
@@ -721,10 +760,16 @@ def build_historical_composite():
                 raw=True)
             return (100 - res) if inv else res
 
-        sA_h = (exp_pct(mg_h) + exp_pct(ry, inv=True) + exp_pct(hy, inv=True)) / 3
+        # v1.4.3: allineamento con scoring engine aggiornato
+        # sA: Monetario — rimosso M2/PIL (ridondante con velocity), aggiunto velocity
+        vel_h = (gdp / m2).dropna()
+        sA_h = (exp_pct(vel_h) + exp_pct(ry, inv=True) + exp_pct(hy, inv=True)) / 3
+        # sB: Econ.Reale — invariato
         sB_h = (exp_pct(ip_y) + exp_pct(ur3, inv=True) +
                 exp_pct(nfp3) + exp_pct(abs(pce_y - 2.0), inv=True)) / 4
-        sC_h = (exp_pct(imp_f, inv=True) + exp_pct(debt, inv=True)) / 2
+        # sC: Fiscale — impulso fiscale ora invert=False (espansivo = bull breve)
+        sC_h = (exp_pct(imp_f, inv=False) + exp_pct(debt, inv=True)) / 2
+        # sD: Produttivo — invariato
         sD_h = (exp_pct(tcu) + exp_pct(ulc_y, inv=True)) / 2
         sE_h = pd.Series(50.0, index=sA_h.index)
 
