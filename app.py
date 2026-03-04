@@ -320,7 +320,13 @@ fred_client = get_fred()
 def load_fred_series(series_id, years=20):
     start = (datetime.now() - timedelta(days=365*years)).strftime("%Y-%m-%d")
     try:
-        return fred_client.get_series(series_id, observation_start=start).dropna()
+        s = fred_client.get_series(series_id, observation_start=start).dropna()
+        # Normalizza indice a DatetimeIndex tz-naive
+        if not isinstance(s.index, pd.DatetimeIndex):
+            s.index = pd.to_datetime(s.index)
+        if hasattr(s.index, "tz") and s.index.tz is not None:
+            s.index = s.index.tz_localize(None)
+        return s
     except Exception:
         return pd.Series(dtype=float)
 
@@ -370,27 +376,54 @@ def load_market_data():
 # ============================================================================
 # DATA TRANSFORMS — v1.4.2: fix QS resample per allineamento GDP FRED
 # ============================================================================
+def _to_dti(s):
+    """Forza indice a DatetimeIndex tz-naive — robusto a object/string/tz-aware da FRED."""
+    s = s.copy()
+    if not isinstance(s.index, pd.DatetimeIndex):
+        s.index = pd.to_datetime(s.index)
+    if hasattr(s.index, "tz") and s.index.tz is not None:
+        s.index = s.index.tz_localize(None)
+    return s
+
 def m2_gdp_ratio(m2, gdp):
     if m2.empty or gdp.empty: return pd.Series(dtype=float)
-    m2_q  = m2.resample("QS").last()
-    gdp_q = gdp.resample("QS").last().ffill()
-    g, m  = gdp_q.align(m2_q, join="inner")
-    return (m / g).dropna() if len(g) > 0 else pd.Series(dtype=float)
+    try:
+        m2  = _to_dti(m2)
+        gdp = _to_dti(gdp)
+        m2_q  = m2.resample("QS").last()
+        gdp_q = gdp.resample("QS").last().ffill()
+        g, m  = gdp_q.align(m2_q, join="inner")
+        if len(g) == 0: return pd.Series(dtype=float)
+        ratio = (m / g).dropna()
+        return ratio
+    except Exception:
+        return pd.Series(dtype=float)
 
 def m2_real(m2, cpi):
     if m2.empty or cpi.empty: return pd.Series(dtype=float)
-    m2_m  = m2.resample("M").last()
-    cpi_m = cpi.resample("M").last()
-    m2_m, cpi_m = m2_m.align(cpi_m, join="inner")
-    if len(m2_m) == 0: return pd.Series(dtype=float)
-    return (m2_m / (cpi_m / cpi_m.iloc[0]) * 100).dropna()
+    try:
+        m2  = _to_dti(m2)
+        cpi = _to_dti(cpi)
+        m2_m  = m2.resample("M").last()
+        cpi_m = cpi.resample("M").last()
+        m2_m, cpi_m = m2_m.align(cpi_m, join="inner")
+        if len(m2_m) == 0: return pd.Series(dtype=float)
+        return (m2_m / (cpi_m / cpi_m.iloc[0]) * 100).dropna()
+    except Exception:
+        return pd.Series(dtype=float)
 
 def m2_velocity(m2, gdp):
     if m2.empty or gdp.empty: return pd.Series(dtype=float)
-    m2_q  = m2.resample("QS").last()
-    gdp_q = gdp.resample("QS").last().ffill()
-    g, m  = gdp_q.align(m2_q, join="inner")
-    return (g / m).dropna() if len(g) > 0 else pd.Series(dtype=float)
+    try:
+        m2  = _to_dti(m2)
+        gdp = _to_dti(gdp)
+        m2_q  = m2.resample("QS").last()
+        gdp_q = gdp.resample("QS").last().ffill()
+        g, m  = gdp_q.align(m2_q, join="inner")
+        if len(g) == 0: return pd.Series(dtype=float)
+        return (g / m).dropna()
+    except Exception:
+        return pd.Series(dtype=float)
 
 def yoy(series, periods=12):
     return series.pct_change(periods).mul(100).dropna()
