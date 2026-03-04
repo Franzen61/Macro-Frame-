@@ -1352,7 +1352,6 @@ with tab2:
                 line=dict(color=CYAN, width=2), name="M2/PIL"))
             fig.update_layout(**base_layout("M2/PIL Ratio", 220))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 3 — ECONOMIA REALE
 # ─────────────────────────────────────────────────────────────────────────────
