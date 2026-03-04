@@ -1227,31 +1227,30 @@ with tab2:
             fig.update_layout(**base_layout("M2 Reale (CPI deflazionato)", 230))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-        # Velocity — v1.4.2: pipeline diretta con cast esplicito
-        _m2v = fred_data["M2"].copy()
-        _gdpv = fred_data["GDP"].copy()
-        if not _m2v.empty and not _gdpv.empty:
-            try:
-                _m2v.index  = pd.to_datetime(_m2v.index)
-                _gdpv.index = pd.to_datetime(_gdpv.index)
-                _m2vq  = _m2v.resample("QS").last()
-                _gdpvq = _gdpv.resample("QS").last().ffill()
-                _gv, _mv = _gdpvq.align(_m2vq, join="inner")
-                if len(_gv) > 0:
-                    _vel = (_gv / _mv).dropna()
-                    _vel.index = pd.to_datetime(_vel.index)
-                    _vel_d = _vel[_vel.index >= cut]
-                    if not _vel_d.empty:
-                        fig = go.Figure()
-                        fig.add_trace(go.Scatter(
-                            x=list(_vel_d.index.strftime("%Y-%m-%d")),
-                            y=list(_vel_d.values),
-                            line=dict(color=PURPLE, width=2), name="Velocity"))
-                        add_percentile_bands(fig, _vel, invert=False)
-                        fig.update_layout(**base_layout("Velocity — GDP/M2", 220))
-                        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-            except Exception as _e:
-                st.caption(f"Velocity non disponibile: {_e}")
+        # Velocity — v1.4.2: versione massima robustezza
+        try:
+            _m2v  = fred_data["M2"].copy()
+            _gdpv = fred_data["GDP"].copy()
+            _m2v.index  = pd.to_datetime(_m2v.index).normalize()
+            _gdpv.index = pd.to_datetime(_gdpv.index).normalize()
+            _m2v  = _m2v.resample("MS").last().ffill()
+            _gdpv = _gdpv.resample("MS").last().ffill()
+            _m2v, _gdpv = _m2v.align(_gdpv, join="inner")
+            if len(_m2v) > 4:
+                _vel = (_gdpv / _m2v).dropna()
+                _cutoff_v = pd.Timestamp.now() - pd.DateOffset(years=years_display)
+                _vel_d = _vel[_vel.index >= _cutoff_v]
+                if len(_vel_d) > 2:
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(
+                        x=list(_vel_d.index.strftime("%Y-%m-%d")),
+                        y=list(_vel_d.values.astype(float)),
+                        line=dict(color=PURPLE, width=2), name="Velocity"))
+                    add_percentile_bands(fig, _vel, invert=False)
+                    fig.update_layout(**base_layout("Velocity — GDP/M2", 220))
+                    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        except Exception as _e:
+            st.caption(f"Velocity errore: {_e}")
 
         # Real Yield
         ry = fred_data["REALYIELD"]
@@ -1308,32 +1307,32 @@ with tab2:
                 "MOVE Index — Bond Vol implicita Treasury (v1.4.1: da Geo → Monetario)", 230))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-        # M2/PIL — v1.4.2: pipeline diretta con cast esplicito a DatetimeIndex
-        _m2_raw  = fred_data["M2"].copy()
-        _gdp_raw = fred_data["GDP"].copy()
-        if not _m2_raw.empty and not _gdp_raw.empty:
-            try:
-                _m2_raw.index  = pd.to_datetime(_m2_raw.index)
-                _gdp_raw.index = pd.to_datetime(_gdp_raw.index)
-                _m2_q  = _m2_raw.resample("QS").last()
-                _gdp_q = _gdp_raw.resample("QS").last().ffill()
-                _g, _m = _gdp_q.align(_m2_q, join="inner")
-                if len(_g) > 0:
-                    _ratio = (_m / _g).dropna()
-                    _ratio.index = pd.to_datetime(_ratio.index)
-                    _ratio_m = _ratio.resample("ME").interpolate(method="time")
-                    _ratio_m.index = pd.to_datetime(_ratio_m.index)
-                    _ratio_d = _ratio_m[_ratio_m.index >= cut]
-                    if not _ratio_d.empty:
-                        fig = go.Figure()
-                        fig.add_trace(go.Scatter(
-                            x=list(_ratio_d.index.strftime("%Y-%m-%d")),
-                            y=list(_ratio_d.values),
-                            line=dict(color=CYAN, width=2), name="M2/PIL"))
-                        fig.update_layout(**base_layout("M2/PIL Ratio", 220))
-                        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-            except Exception as _e:
-                st.caption(f"M2/PIL non disponibile: {_e}")
+        # M2/PIL — v1.4.2: versione massima robustezza
+        try:
+            _m2r = fred_data["M2"].copy()
+            _gdpr = fred_data["GDP"].copy()
+            _m2r.index  = pd.to_datetime(_m2r.index).normalize()
+            _gdpr.index = pd.to_datetime(_gdpr.index).normalize()
+            # Ricampiona entrambi a inizio mese
+            _m2r  = _m2r.resample("MS").last().ffill()
+            _gdpr = _gdpr.resample("MS").last().ffill()
+            # Allinea su indice comune mensile
+            _m2r, _gdpr = _m2r.align(_gdpr, join="inner")
+            if len(_m2r) > 4:
+                _ratio = (_m2r / _gdpr).dropna()
+                # Filtra per finestra temporale senza usare fbd/safe_ts
+                _cutoff = pd.Timestamp.now() - pd.DateOffset(years=years_display)
+                _ratio_d = _ratio[_ratio.index >= _cutoff]
+                if len(_ratio_d) > 2:
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatter(
+                        x=list(_ratio_d.index.strftime("%Y-%m-%d")),
+                        y=list(_ratio_d.values.astype(float)),
+                        line=dict(color=CYAN, width=2), name="M2/PIL"))
+                    fig.update_layout(**base_layout("M2/PIL Ratio", 220))
+                    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        except Exception as _e:
+            st.caption(f"M2/PIL errore: {_e}")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 3 — ECONOMIA REALE
