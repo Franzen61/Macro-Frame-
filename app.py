@@ -647,11 +647,14 @@ def score_geopolitical(mkt, gpr_df=None):
                              "series": oil, "unit": "$", "desc": "Petrolio · alto = rischio inflattivo"}
     eem = mkt.get("EEM")
     if eem is not None and len(eem) > 63:
-        eem_3m = float(eem.iloc[-1] / eem.iloc[-63] - 1) * 100
-        s = min(100, max(0, (eem_3m + 20) / 40 * 100))
+        # v1.4.3: percentile expanding su rendimento 3M — confrontabile con gli altri indicatori
+        eem_3m_series = eem.pct_change(63).mul(100).dropna()
+        s = pct_score(eem_3m_series, invert=False)  # alto rendimento EM = bull = score alto
+        eem_3m_last = float(eem_3m_series.iloc[-1])
         scores.append(s)
-        ind["EEM 3M"] = {"value": fmt(eem_3m, 1), "score": round(s, 1),
-                          "series": eem, "unit": "%", "desc": "ETF EM 3 mesi · positivo = risk appetite"}
+        ind["EEM 3M"] = {"value": fmt(eem_3m_last, 1), "score": round(s, 1),
+                          "series": eem_3m_series, "unit": "%",
+                          "desc": "ETF EM rendimento 3M · percentile expanding · alto = risk appetite"}
     dxy = mkt.get("DXY")
     if dxy is not None and len(dxy) > 60:
         s = pct_score(dxy, invert=True)
