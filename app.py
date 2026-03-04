@@ -1344,7 +1344,9 @@ with tab2:
         # M2/PIL
         mg = m2_gdp_ratio(fred_data["M2"], fred_data["GDP"])
         if not mg.empty:
-            mg_d = fbd(mg.resample("M").interpolate(), cut)
+        mg = mg.sort_index()
+        mg_m = mg.resample("M").interpolate(method="time")
+        mg_d = fbd(mg_m, cut)
             fig = go.Figure()
             fig.add_trace(go.Scatter(x=mg_d.index, y=mg_d,
                 line=dict(color=CYAN, width=2), name="M2/PIL"))
