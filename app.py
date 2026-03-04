@@ -451,7 +451,7 @@ def pmi_auto_fred(ism_mfg, ism_svc):
 # INDICATOR METADATA
 # ============================================================================
 INDICATOR_META = {
-    "M2/PIL":              "C",
+    "M2/PIL":              "C",   # informativo — inverso di Velocity, escluso da score
     "M2 Reale":            "C",
     "Velocity (GDP/M2)":   "C",
     "Real Yield 10Y":      "L",
@@ -483,11 +483,10 @@ def score_monetary(d):
 
     mg = m2_gdp_ratio(d["M2"], d["GDP"])
     if not mg.empty:
-        mg_m = mg.sort_index().resample("M").interpolate(method="time")
-        s = pct_score(mg_m)
-        scores.append(s)
-        ind["M2/PIL"] = {"value": fmt(float(mg.iloc[-1]), 3), "score": s,
-                         "series": mg, "unit": "", "desc": "M2 / PIL nominale"}
+        # M2/PIL è l'inverso esatto di Velocity (GDP/M2) → ridondante nello score
+        # Tenuto come grafico informativo, score=None (come Deficit/PIL nel fiscale)
+        ind["M2/PIL"] = {"value": fmt(float(mg.iloc[-1]), 3), "score": None,
+                         "series": mg, "unit": "", "desc": "M2 / PIL nominale · solo informativo"}
 
     mr = m2_real(d["M2"], d["CPI"])
     if not mr.empty:
@@ -1799,7 +1798,7 @@ with tab7:
           <div class="metric-label">ARCHITETTURA DEI PILASTRI</div>
           <div style="font-size:0.65rem;color:{TEXT_COL};line-height:1.8;margin-top:8px">
             <b style="color:{CYAN}">A · Monetario (20%)</b><br>
-            M2/PIL · M2 Reale · Velocity · Real Yield · HY OAS · STLFSI · MOVE<br><br>
+            M2 Reale · Velocity · Real Yield · HY OAS · STLFSI · MOVE<br>(M2/PIL: solo grafico, inverso esatto di Velocity)<br><br>
             <b style="color:{LIME}">B · Economia Reale (30%)</b><br>
             PMI Composito · INDPRO YoY · Disoccupazione D3M · NFP D3M · Core PCE YoY<br><br>
             <b style="color:{ORANGE}">C · Fiscale (15%)</b><br>
@@ -1855,4 +1854,3 @@ with tab7:
             <span style="color:{LIME}">NEW v1.4</span> Tab Backtest rendimenti per regime
           </div>
         </div>""", unsafe_allow_html=True)
-      
