@@ -1227,17 +1227,20 @@ with tab2:
             fig.update_layout(**base_layout("M2 Reale (CPI deflazionato)", 230))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-        # Velocity — v1.4.2: versione massima robustezza
+        # Velocity — v1.4.2: GDP trimestrale → espanso mensile con ffill, poi ratio su M2 mensile
         try:
             _m2v  = fred_data["M2"].copy()
             _gdpv = fred_data["GDP"].copy()
             _m2v.index  = pd.to_datetime(_m2v.index).normalize()
             _gdpv.index = pd.to_datetime(_gdpv.index).normalize()
-            _m2v  = _m2v.resample("MS").last().ffill()
-            _gdpv = _gdpv.resample("MS").last().ffill()
-            _m2v, _gdpv = _m2v.align(_gdpv, join="inner")
-            if len(_m2v) > 4:
-                _vel = (_gdpv / _m2v).dropna()
+            # M2: mensile
+            _m2v = _m2v.resample("MS").last()
+            # GDP: trimestrale → espandi a mensile con ffill
+            _gdpv = _gdpv.resample("MS").last().reindex(_m2v.index).ffill().bfill()
+            # Calcola ratio solo dove entrambi hanno valori
+            _common = _m2v.index.intersection(_gdpv.dropna().index)
+            if len(_common) > 4:
+                _vel = (_gdpv.loc[_common] / _m2v.loc[_common]).dropna()
                 _cutoff_v = pd.Timestamp.now() - pd.DateOffset(years=years_display)
                 _vel_d = _vel[_vel.index >= _cutoff_v]
                 if len(_vel_d) > 2:
@@ -1307,28 +1310,26 @@ with tab2:
                 "MOVE Index — Bond Vol implicita Treasury (v1.4.1: da Geo → Monetario)", 230))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-        # M2/PIL — v1.4.2: versione massima robustezza
+        # M2/PIL — v1.4.2: GDP trimestrale → espanso mensile con ffill, poi ratio su M2 mensile
         try:
-            _m2r = fred_data["M2"].copy()
+            _m2r  = fred_data["M2"].copy()
             _gdpr = fred_data["GDP"].copy()
             _m2r.index  = pd.to_datetime(_m2r.index).normalize()
             _gdpr.index = pd.to_datetime(_gdpr.index).normalize()
-            # Ricampiona entrambi a inizio mese
-            _m2r  = _m2r.resample("MS").last().ffill()
-            _gdpr = _gdpr.resample("MS").last().ffill()
-            # Allinea su indice comune mensile
-            _m2r, _gdpr = _m2r.align(_gdpr, join="inner")
-            if len(_m2r) > 4:
-                _ratio = (_m2r / _gdpr).dropna()
-                # Filtra per finestra temporale senza usare fbd/safe_ts
-                _cutoff = pd.Timestamp.now() - pd.DateOffset(years=years_display)
-                _ratio_d = _ratio[_ratio.index >= _cutoff]
+            _m2r  = _m2r.resample("MS").last()
+            _gdpr = _gdpr.resample("MS").last().reindex(_m2r.index).ffill().bfill()
+            _common_r = _m2r.index.intersection(_gdpr.dropna().index)
+            if len(_common_r) > 4:
+                _ratio = (_m2r.loc[_common_r] / _gdpr.loc[_common_r]).dropna()
+                _cutoff_r = pd.Timestamp.now() - pd.DateOffset(years=years_display)
+                _ratio_d = _ratio[_ratio.index >= _cutoff_r]
                 if len(_ratio_d) > 2:
                     fig = go.Figure()
                     fig.add_trace(go.Scatter(
                         x=list(_ratio_d.index.strftime("%Y-%m-%d")),
                         y=list(_ratio_d.values.astype(float)),
                         line=dict(color=CYAN, width=2), name="M2/PIL"))
+                    add_percentile_bands(fig, _ratio, invert=False)  # alto M2/PIL = bull
                     fig.update_layout(**base_layout("M2/PIL Ratio", 220))
                     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
         except Exception as _e:
@@ -1854,3 +1855,4 @@ with tab7:
             <span style="color:{LIME}">NEW v1.4</span> Tab Backtest rendimenti per regime
           </div>
         </div>""", unsafe_allow_html=True)
+      
