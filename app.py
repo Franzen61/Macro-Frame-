@@ -740,14 +740,49 @@ def score_geopolitical(mkt, gpr_df=None):
     return round(float(np.mean(scores)) if scores else 50.0, 1), ind
 
 
+def compute_regime_absolute(gdp_yoy, unrate_diff6m, indpro_yoy, pce_yoy, real_yield):
+    """
+    v1.6.0: classificazione regime su soglie assolute economicamente significative.
+    Settore-neutrale — non dipende da quale driver produce la crescita.
+
+    CONDIZIONI REALI (favorevoli se >= 2 su 3):
+      - PIL reale YoY > 1.5%
+      - UNRATE diff 6M <= 0 (mercato lavoro non deteriora)
+      - INDPRO YoY > 0% (produzione non in contrazione)
+
+    PRESSIONE MONETARIA (presente se >= 1 su 2):
+      - PCE YoY > 2.5% (inflazione sopra target Fed)
+      - Real Yield 10Y > 1.0% (costo reale denaro elevato)
+    """
+    # Condizioni reali
+    cond_gdp    = (gdp_yoy is not None) and (gdp_yoy > 1.5)
+    cond_ur     = (unrate_diff6m is not None) and (unrate_diff6m <= 0.0)
+    cond_ip     = (indpro_yoy is not None) and (indpro_yoy > 0.0)
+    real_ok     = sum([cond_gdp, cond_ur, cond_ip]) >= 2
+
+    # Pressione monetaria
+    cond_pce    = (pce_yoy is not None) and (pce_yoy > 2.5)
+    cond_ry     = (real_yield is not None) and (real_yield > 1.0)
+    pressure_ok = cond_pce or cond_ry
+
+    if real_ok and not pressure_ok:
+        return "ESPANSIONE EQUILIBRATA",     CYAN,   "Condizioni reali favorevoli · pressione monetaria contenuta · ottimale per equity"
+    if real_ok and pressure_ok:
+        return "ESPANSIONE SOTTO PRESSIONE", ORANGE, "Condizioni reali favorevoli · pressione monetaria elevata · favorevole real assets"
+    if not real_ok and pressure_ok:
+        return "STAGFLAZIONE",               RED,    "Condizioni reali deboli · pressione monetaria elevata · sfavorevole equity e bond"
+    return     "DISINFLAZIONE", BLUE, "Condizioni reali deboli · pressione monetaria contenuta · favorevole bond lunghi"
+
+
 def compute_regime(growth, inflation):
+    """Fallback legacy — usato solo se i dati assoluti non sono disponibili."""
     if growth >= 50 and inflation < 50:
-        return "GOLDILOCKS",           CYAN,   "Crescita solida · inflazione contenuta · ottimale per equity"
+        return "ESPANSIONE EQUILIBRATA",     CYAN,   "Condizioni reali favorevoli · pressione monetaria contenuta · ottimale per equity"
     if growth >= 50 and inflation >= 50:
-        return "INFLATIONARY BOOM",    ORANGE, "Crescita forte · inflazione elevata · favorevole real assets"
+        return "ESPANSIONE SOTTO PRESSIONE", ORANGE, "Condizioni reali favorevoli · pressione monetaria elevata · favorevole real assets"
     if growth < 50  and inflation >= 50:
-        return "STAGFLATION",          RED,    "Crescita debole · inflazione alta · sfavorevole equity e bond"
-    return     "DISINFLATIONARY BUST", BLUE,   "Crescita debole · disinflazione · favorevole bond lunghi"
+        return "STAGFLAZIONE",               RED,    "Condizioni reali deboli · pressione monetaria elevata · sfavorevole equity e bond"
+    return     "DISINFLAZIONE", BLUE, "Condizioni reali deboli · pressione monetaria contenuta · favorevole bond lunghi"
 
 # ============================================================================
 # SERIE STORICA
@@ -772,6 +807,8 @@ def build_historical_composite():
         ulc_q = gs("ULCNFB").resample("Q").last().resample("M").ffill()
         def_  = gs("FYFSGDA188S").resample("M").last().ffill()
         debt  = gs("GFDEGDQ188S").resample("M").last().ffill()
+        # v1.6.0: PIL reale YoY per classificazione regime assoluta
+        gdp_real = gs("A191RL1Q225SBEA", 25).resample("QS").last().resample("MS").ffill()
 
         mg_h  = (m2 / gdp).dropna()
         ip_y  = ip.pct_change(12).mul(100)
@@ -802,15 +839,25 @@ def build_historical_composite():
         # Questo evita che anni 70-80 gonfino il percentile nel backtest
         pce_pct_h = exp_pct(pce_y)  # expanding su campione disponibile (25Y caricati)
 
+        # Variabili assolute per classificazione regime v1.6.0
+        gdp_real_m = gdp_real.reindex(ip.index).ffill()
+        gdp_yoy_h  = gdp_real_m  # già YoY dalla FRED (A191RL1Q225SBEA)
+        ur_diff6_h = ur.diff(6)  # variazione disoccupazione 6 mesi
+        ip_yoy_h   = ip_y        # INDPRO YoY già calcolato
+
         df = pd.DataFrame({"sA": sA_h, "sB": sB_h, "sCD": sCD_h,
-                           "sE": sE_h, "pce_pct": pce_pct_h}).dropna()
+                           "sE": sE_h, "pce_pct": pce_pct_h,
+                           "gdp_yoy": gdp_yoy_h, "ur_diff6": ur_diff6_h,
+                           "ip_yoy": ip_yoy_h, "pce_yoy": pce_y,
+                           "ry": ry.reindex(ip.index).ffill()}).dropna()
         # Pesi v1.5.0: A=25% B=35% CD=25% E=15%
         df["Composite"]  = df["sA"]*0.25 + df["sB"]*0.35 + df["sCD"]*0.25 + df["sE"]*0.15
         df["Monetario"]  = df["sA"]
         df["Econ.Reale"] = df["sB"]
         df["Policy"]     = df["sCD"]
         df["PCE_pct"]    = df["pce_pct"]
-        return df[["Composite","Monetario","Econ.Reale","Policy","PCE_pct"]].dropna()
+        return df[["Composite","Monetario","Econ.Reale","Policy","PCE_pct",
+                   "gdp_yoy","ur_diff6","ip_yoy","pce_yoy","ry"]].dropna()
     except Exception:
         return pd.DataFrame()
 
@@ -832,10 +879,21 @@ def build_regime_backtest(hist_df):
             hist["inflation"] = 100 - hist["Monetario"]
 
         def classify(row):
-            if row["growth"] >= 50 and row["inflation"] < 50:  return "GOLDILOCKS"
-            if row["growth"] >= 50 and row["inflation"] >= 50: return "INFL.BOOM"
-            if row["growth"] < 50  and row["inflation"] >= 50: return "STAGFLATION"
-            return "DISINFL.BUST"
+            # v1.6.0: soglie assolute economicamente significative
+            # Condizioni reali (favorevoli se >= 2 su 3)
+            cond_gdp = ("gdp_yoy" in row) and (not pd.isna(row["gdp_yoy"])) and (row["gdp_yoy"] > 1.5)
+            cond_ur  = ("ur_diff6" in row) and (not pd.isna(row["ur_diff6"])) and (row["ur_diff6"] <= 0.0)
+            cond_ip  = ("ip_yoy" in row) and (not pd.isna(row["ip_yoy"])) and (row["ip_yoy"] > 0.0)
+            real_ok  = sum([cond_gdp, cond_ur, cond_ip]) >= 2
+            # Pressione monetaria (presente se >= 1 su 2)
+            cond_pce = ("pce_yoy" in row) and (not pd.isna(row["pce_yoy"])) and (row["pce_yoy"] > 2.5)
+            cond_ry  = ("ry" in row) and (not pd.isna(row["ry"])) and (row["ry"] > 1.0)
+            pressure = cond_pce or cond_ry
+            # Classificazione
+            if real_ok and not pressure:  return "ESPANSIONE EQUILIBRATA"
+            if real_ok and pressure:      return "ESPANSIONE SOTTO PRESSIONE"
+            if not real_ok and pressure:  return "STAGFLAZIONE"
+            return "DISINFLAZIONE"
 
         hist["regime"] = hist.apply(classify, axis=1)
         assets = {}
@@ -856,7 +914,8 @@ def build_regime_backtest(hist_df):
         merged = hist[["regime"]].join(asset_df, how="inner").dropna()
 
         results = {}
-        for regime in ["GOLDILOCKS","INFL.BOOM","STAGFLATION","DISINFL.BUST"]:
+        for regime in ["ESPANSIONE EQUILIBRATA","ESPANSIONE SOTTO PRESSIONE",
+                       "STAGFLAZIONE","DISINFLAZIONE"]:
             sub = merged[merged["regime"] == regime]
             if len(sub) < 3:
                 results[regime] = {"n_months": 0}
@@ -882,7 +941,7 @@ with st.sidebar:
         '🧭 MACRO CORE ENGINE</div>', unsafe_allow_html=True)
     st.markdown(
         '<div style="font-size:0.58rem;letter-spacing:3px;color:#4a6070;'
-        'text-transform:uppercase;margin-bottom:14px">v1.5.6 · Regime Monitor</div>',
+        'text-transform:uppercase;margin-bottom:14px">v1.6.0 · Regime Monitor</div>',
         unsafe_allow_html=True)
 
     st.markdown('<div class="sidebar-section">📊 PMI Composito</div>', unsafe_allow_html=True)
@@ -979,14 +1038,41 @@ else:
     inflation_proxy = 100 - sA
 breadth         = float(np.mean([s > 50 for s in pillar_scores.values()]) * 100)
 confidence      = float(np.mean([abs(s - 50) for s in pillar_scores.values()]))
-regime_label, regime_color, regime_desc = compute_regime(growth_score, inflation_proxy)
+# v1.6.0: usa soglie assolute se i dati sono disponibili
+try:
+    _gdp_yoy   = None
+    _ur_diff6m = None
+    _ip_yoy    = None
+    _pce_yoy   = None
+    _ry_val    = None
+    # PIL reale YoY
+    _gdp_r = load_fred_series("A191RL1Q225SBEA", 5)
+    if not _gdp_r.empty:
+        _gdp_yoy = float(_gdp_r.iloc[-1])
+    # UNRATE diff 6M
+    if not fred_data["UNRATE"].empty:
+        _ur = fred_data["UNRATE"].resample("M").last()
+        _ur_diff6m = float(_ur.diff(6).dropna().iloc[-1])
+    # INDPRO YoY
+    if not fred_data["INDPRO"].empty:
+        _ip_yoy = float(yoy(fred_data["INDPRO"]).dropna().iloc[-1])
+    # PCE YoY
+    if not fred_data["PCE"].empty:
+        _pce_yoy = float(yoy(fred_data["PCE"]).dropna().iloc[-1])
+    # Real Yield
+    if not fred_data["REALYIELD"].empty:
+        _ry_val = float(fred_data["REALYIELD"].dropna().iloc[-1])
+    regime_label, regime_color, regime_desc = compute_regime_absolute(
+        _gdp_yoy, _ur_diff6m, _ip_yoy, _pce_yoy, _ry_val)
+except Exception:
+    regime_label, regime_color, regime_desc = compute_regime(growth_score, inflation_proxy)
 
 # ============================================================================
 # HEADER
 # ============================================================================
 st.markdown('<div class="main-title">🧭 Macro Core Engine</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="sub-title">4-Pillar Macro Regime Monitor · FRED + yfinance · Percentile Expanding · v1.5.6</div>',
+    '<div class="sub-title">4-Pillar Macro Regime Monitor · FRED + yfinance · Percentile Expanding · v1.6.0</div>',
     unsafe_allow_html=True)
 st.markdown(
     f'<div style="font-size:0.58rem;color:{MUTED};text-align:right;margin-top:2px;margin-bottom:4px">'
@@ -1092,8 +1178,8 @@ with tab1:
             dict(type="rect", x0=0,  x1=50,  y0=0,  y1=50,  fillcolor="rgba(255,77,109,0.05)", line_width=0),
         ]
         fig_quad.update_layout(**lq)
-        for qx, qy, ql, qc in [(75,75,"GOLDILOCKS",CYAN),(25,75,"INFL.BOOM",ORANGE),
-                                (75,25,"DISINFL.BUST",BLUE),(25,25,"STAGFLATION",RED)]:
+        for qx, qy, ql, qc in [(75,75,"ESPANSIONE EQUILIBRATA",CYAN),(25,75,"ESPANSIONE SOTTO PRESSIONE",ORANGE),
+                                (75,25,"DISINFLAZIONE",BLUE),(25,25,"STAGFLAZIONE",RED)]:
             fig_quad.add_annotation(x=qx, y=qy, text=f"<b>{ql}</b>",
                 font=dict(family="Syne", size=9, color=qc), showarrow=False)
         fig_quad.add_vline(x=50, line_dash="dash", line_color=GRID_COL, line_width=1)
@@ -1128,7 +1214,7 @@ with tab1:
     with asset_col:
         st.markdown('<div class="section-label">Implicazioni Asset Class</div>', unsafe_allow_html=True)
         IMPL = {
-            "GOLDILOCKS":         [("Equity",CYAN,"FAVOREVOLE","Utili crescita, multipli sani"),
+            "ESPANSIONE EQUILIBRATA":         [("Equity",CYAN,"FAVOREVOLE","Utili crescita, multipli sani"),
                                    ("Bond",ORANGE,"NEUTRALE","Carry ok, duration non premiata"),
                                    ("Commodity",ORANGE,"SELETTIVO","Domanda buona, no spike"),
                                    ("Cash",RED,"SOTTOPESO","Opportunity cost alto")],
@@ -1136,7 +1222,7 @@ with tab1:
                                    ("Bond",RED,"NEGATIVO","Duration sotto pressione"),
                                    ("Commodity",CYAN,"OTTIMALE","Oil, metalli, soft commodity"),
                                    ("Cash",ORANGE,"NEUTRALE","Nominali alti, reali compressi")],
-            "STAGFLATION":        [("Equity",RED,"NEGATIVO","Margini compressi, multipli giu"),
+            "STAGFLAZIONE":        [("Equity",RED,"NEGATIVO","Margini compressi, multipli giu"),
                                    ("Bond",RED,"NEGATIVO","Inflazione erode reale"),
                                    ("Commodity",CYAN,"PARZIALE","Energia e metalli preziosi"),
                                    ("Cash",CYAN,"RELATIVO","Tassi nominali elevati")],
@@ -1145,7 +1231,7 @@ with tab1:
                                     ("Commodity",RED,"NEGATIVO","Domanda debole"),
                                     ("Cash",ORANGE,"NEUTRALE","Rendimento reale positivo")],
         }
-        impl = IMPL.get(regime_label, IMPL["GOLDILOCKS"])
+        impl = IMPL.get(regime_label, IMPL["ESPANSIONE EQUILIBRATA"])
         for asset, ac, status, desc in impl:
             rgb = tuple(int(ac.lstrip("#")[i:i+2], 16) for i in (0, 2, 4))
             st.markdown(f"""
@@ -1913,8 +1999,8 @@ with tab6:
         bt = build_regime_backtest(hist_df_bt) if not hist_df_bt.empty else None
 
     if bt:
-        REGIME_COLS = {"GOLDILOCKS": CYAN, "INFL.BOOM": ORANGE,
-                       "STAGFLATION": RED, "DISINFL.BUST": BLUE}
+        REGIME_COLS = {"ESPANSIONE EQUILIBRATA": CYAN, "ESPANSIONE SOTTO PRESSIONE": ORANGE,
+                       "STAGFLAZIONE": RED, "DISINFLAZIONE": BLUE}
         ASSETS = ["SPY", "TLT", "GLD", "GSG"]
         ASSET_NAMES = {"SPY": "Equity (SPY)", "TLT": "Bond LT (TLT)",
                        "GLD": "Gold (GLD)",   "GSG": "Commodity (GSG)"}
@@ -1965,11 +2051,11 @@ with tab6:
             st.markdown('<div class="section-label">Distribuzione Regime nel Tempo</div>',
                 unsafe_allow_html=True)
             reg_cut = fbd(reg_ser, cutoff_date(max(years_display, 10)))
-            regime_num = reg_cut.map({"GOLDILOCKS": 3, "INFL.BOOM": 2,
-                                      "STAGFLATION": 1, "DISINFL.BUST": 0})
+            regime_num = reg_cut.map({"ESPANSIONE EQUILIBRATA": 3, "ESPANSIONE SOTTO PRESSIONE": 2,
+                                      "STAGFLAZIONE": 1, "DISINFLAZIONE": 0})
             fig_rt = go.Figure()
-            for reg_name, rval, rc in [("GOLDILOCKS",3,CYAN),("INFL.BOOM",2,ORANGE),
-                                        ("STAGFLATION",1,RED),("DISINFL.BUST",0,BLUE)]:
+            for reg_name, rval, rc in [("ESPANSIONE EQUILIBRATA",3,CYAN),("ESPANSIONE SOTTO PRESSIONE",2,ORANGE),
+                                        ("STAGFLAZIONE",1,RED),("DISINFLAZIONE",0,BLUE)]:
                 mask = regime_num == rval
                 fig_rt.add_trace(go.Bar(x=regime_num[mask].index, y=[1]*mask.sum(),
                     marker_color=rc, name=reg_name, opacity=0.7))
@@ -2040,12 +2126,18 @@ with tab7:
         <div class="metric-tile" style="margin-bottom:12px">
           <div class="metric-label">REGIME CLASSIFICATION</div>
           <div style="font-size:0.65rem;color:{TEXT_COL};line-height:1.8;margin-top:8px">
-            <b style="color:{CYAN}">Growth Score</b> = sB diretto (Econ. Reale)<br>
-            <b style="color:{ORANGE}">Inflation Proxy</b> = PCE YoY · rolling 10Y<br><br>
-            <b style="color:{CYAN}">GOLDILOCKS</b>: growth &ge;50 · infl &lt;50<br>
-            <b style="color:{ORANGE}">INFL. BOOM</b>: growth &ge;50 · infl &ge;50<br>
-            <b style="color:{RED}">STAGFLATION</b>: growth &lt;50 · infl &ge;50<br>
-            <b style="color:{BLUE}">DISINFL. BUST</b>: growth &lt;50 · infl &lt;50
+            <b style="color:{CYAN}">Classificazione: soglie assolute (v1.6.0)</b><br><br>
+            Condizioni Reali (favorevoli se &ge;2 su 3):<br>
+            · PIL reale YoY &gt; 1.5%<br>
+            · UNRATE diff 6M &le; 0<br>
+            · INDPRO YoY &gt; 0%<br><br>
+            Pressione Monetaria (se &ge;1 su 2):<br>
+            · PCE YoY &gt; 2.5%<br>
+            · Real Yield &gt; 1.0%<br><br>
+            <b style="color:{CYAN}">ESPANSIONE EQUILIBRATA</b>: reale OK · no pressione<br>
+            <b style="color:{ORANGE}">ESPANSIONE SOTTO PRESSIONE</b>: reale OK · pressione<br>
+            <b style="color:{RED}">STAGFLAZIONE</b>: reale debole · pressione<br>
+            <b style="color:{BLUE}">DISINFLAZIONE</b>: reale debole · no pressione
           </div>
         </div>""", unsafe_allow_html=True)
 
