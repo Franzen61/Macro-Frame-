@@ -369,8 +369,25 @@ def load_all_fred():
     d["PAYEMS"]    = load_fred_series("PAYEMS",       20)
     d["PCE"]       = load_fred_series("PCEPILFE",     20)
     d["RETAIL"]    = load_fred_series("RSXFS",        20)
-    d["ISM_MFG"]   = load_fred_series("NAPM",         20)
-    d["ISM_SVC"]   = load_fred_series("NMFBAI",       20)
+    # ISM Manufacturing: NAPM (storico fino 2001) + ISMMAN (2001-oggi)
+    # Usiamo ISMMAN come serie principale, fallback su NAPM
+    ism_mfg_new = load_fred_series("ISMMAN", 20)
+    ism_mfg_old = load_fred_series("NAPM",   20)
+    if not ism_mfg_new.empty:
+        d["ISM_MFG"] = ism_mfg_new
+    elif not ism_mfg_old.empty:
+        d["ISM_MFG"] = ism_mfg_old
+    else:
+        d["ISM_MFG"] = pd.Series(dtype=float)
+    # ISM Services: NMFBAI (storico) + ISMSERV (corrente)
+    ism_svc_new = load_fred_series("ISMSERV", 20)
+    ism_svc_old = load_fred_series("NMFBAI",  20)
+    if not ism_svc_new.empty:
+        d["ISM_SVC"] = ism_svc_new
+    elif not ism_svc_old.empty:
+        d["ISM_SVC"] = ism_svc_old
+    else:
+        d["ISM_SVC"] = pd.Series(dtype=float)
     d["DEFICIT"]   = load_fred_series("FYFSGDA188S",  30)
     d["DEBT_GDP"]  = load_fred_series("GFDEGDQ188S",  30)
     d["TCU"]       = load_fred_series("TCU",          20)
@@ -880,7 +897,7 @@ with st.sidebar:
         '🧭 MACRO CORE ENGINE</div>', unsafe_allow_html=True)
     st.markdown(
         '<div style="font-size:0.58rem;letter-spacing:3px;color:#4a6070;'
-        'text-transform:uppercase;margin-bottom:14px">v1.5.2 · Regime Monitor</div>',
+        'text-transform:uppercase;margin-bottom:14px">v1.5.3 · Regime Monitor</div>',
         unsafe_allow_html=True)
 
     st.markdown('<div class="sidebar-section">📊 PMI Composito</div>', unsafe_allow_html=True)
@@ -978,7 +995,7 @@ regime_label, regime_color, regime_desc = compute_regime(growth_score, inflation
 # ============================================================================
 st.markdown('<div class="main-title">🧭 Macro Core Engine</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="sub-title">4-Pillar Macro Regime Monitor · FRED + yfinance · Percentile Expanding · v1.5.2</div>',
+    '<div class="sub-title">4-Pillar Macro Regime Monitor · FRED + yfinance · Percentile Expanding · v1.5.3</div>',
     unsafe_allow_html=True)
 st.markdown(
     f'<div style="font-size:0.58rem;color:{MUTED};text-align:right;margin-top:2px;margin-bottom:4px">'
@@ -1098,13 +1115,13 @@ with tab1:
     radar_col, asset_col = st.columns([1, 1])
     with radar_col:
         st.markdown('<div class="section-label">Radar — Profilo Macro</div>', unsafe_allow_html=True)
-        cats = ["Monetario", "Econ. Reale", "Fiscale", "Produttivo", "Geopolitico"]
+        cats = ["Monetario", "Econ. Reale", "Policy & Structure", "Geopolitico"]
         vr = [sA, sB, sCD, sE]
         fig_radar = go.Figure()
         fig_radar.add_trace(go.Scatterpolar(r=vr+[vr[0]], theta=cats+[cats[0]],
             fill="toself", fillcolor="rgba(0,245,196,0.08)",
             line=dict(color=CYAN, width=2), name="Score"))
-        fig_radar.add_trace(go.Scatterpolar(r=[50]*6, theta=cats+[cats[0]],
+        fig_radar.add_trace(go.Scatterpolar(r=[50]*5, theta=cats+[cats[0]],
             line=dict(color=ORANGE, width=1, dash="dot"), name="Neutro"))
         fig_radar.update_layout(
             polar=dict(bgcolor=PLOT_BG,
@@ -1351,7 +1368,7 @@ with tab2:
                         x=list(_vel_d.index.strftime("%Y-%m-%d")),
                         y=list(_vel_d.values.astype(float)),
                         line=dict(color=PURPLE, width=2), name="Velocity"))
-                    add_percentile_bands(fig, _vel, invert=False)
+                    add_percentile_bands(fig, _vel, invert=True)  # invert=True: bassa velocity = area bull
                     fig.update_layout(**base_layout("Velocity — GDP/M2", 220))
                     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
         except Exception as _e:
@@ -1990,7 +2007,7 @@ with tab6:
 # TAB 7 — METODOLOGIA
 # ─────────────────────────────────────────────────────────────────────────────
 with tab7:
-    st.markdown('<div class="section-label">Macro Core Engine v1.4.2 — Note Metodologiche</div>',
+    st.markdown('<div class="section-label">Macro Core Engine v1.5.2 — Note Metodologiche</div>',
         unsafe_allow_html=True)
 
     col_m1, col_m2 = st.columns(2)
@@ -2012,16 +2029,18 @@ with tab7:
         <div class="metric-tile">
           <div class="metric-label">ARCHITETTURA DEI PILASTRI</div>
           <div style="font-size:0.65rem;color:{TEXT_COL};line-height:1.8;margin-top:8px">
-            <b style="color:{CYAN}">A · Monetario (20%)</b><br>
-            M2 Reale · Velocity · Real Yield · HY OAS · STLFSI · MOVE<br>(M2/PIL: solo grafico, inverso esatto di Velocity)<br><br>
-            <b style="color:{LIME}">B · Economia Reale (30%)</b><br>
-            PMI Composito · INDPRO YoY · Disoccupazione D3M · NFP D3M · Core PCE YoY<br><br>
-            <b style="color:{ORANGE}">C · Fiscale (15%)</b><br>
-            Impulso Fiscale · Debito/PIL<br><br>
-            <b style="color:{BLUE}">D · Produttivo (15%)</b><br>
-            Capacity Utilization · ULC YoY · Output Gap · Produttivita YoY<br><br>
-            <b style="color:{MAGENTA}">E · Geopolitico (20%)</b><br>
-            Oil WTI · EEM 3M · DXY · GPR Index (se CSV caricato)
+            <b style="color:{CYAN}">A · Monetario (25%)</b><br>
+            M2 Reale · Velocity (invert) · Real Yield · HY OAS · STLFSI · MOVE<br>
+            M2/PIL: solo informativo (inverso esatto di Velocity)<br><br>
+            <b style="color:{LIME}">B · Economia Reale (35%)</b><br>
+            PMI Composito · INDPRO YoY · Disoccupazione (livello) · Core PCE YoY<br>
+            NFP: solo grafico informativo (corr. -0.53 vs SPY)<br><br>
+            <b style="color:{ORANGE}">C+D · Policy &amp; Structure (25%)</b><br>
+            Impulso Fiscale · ULC YoY · ISM Services Δ3M · Retail Sales YoY<br>
+            Debito/PIL: solo informativo (trend strutturale)<br>
+            Rimossi: TCU (corr -0.18) · Output Gap (bias) · Produttività (INDPRO debole)<br><br>
+            <b style="color:{MAGENTA}">E · Geopolitico (15%)</b><br>
+            Oil WTI YoY · EEM 3M · DXY · GPR Index (se CSV caricato)
           </div>
         </div>""", unsafe_allow_html=True)
 
@@ -2030,8 +2049,8 @@ with tab7:
         <div class="metric-tile" style="margin-bottom:12px">
           <div class="metric-label">REGIME CLASSIFICATION</div>
           <div style="font-size:0.65rem;color:{TEXT_COL};line-height:1.8;margin-top:8px">
-            <b style="color:{CYAN}">Growth Score</b> = media(sB, sCD)<br>
-            <b style="color:{ORANGE}">Inflation Proxy</b> = 100 - sA<br><br>
+            <b style="color:{CYAN}">Growth Score</b> = sB diretto (Econ. Reale)<br>
+            <b style="color:{ORANGE}">Inflation Proxy</b> = PCE YoY · rolling 10Y<br><br>
             <b style="color:{CYAN}">GOLDILOCKS</b>: growth &ge;50 · infl &lt;50<br>
             <b style="color:{ORANGE}">INFL. BOOM</b>: growth &ge;50 · infl &ge;50<br>
             <b style="color:{RED}">STAGFLATION</b>: growth &lt;50 · infl &ge;50<br>
@@ -2053,19 +2072,18 @@ with tab7:
         <div class="metric-tile">
           <div class="metric-label">CHANGELOG</div>
           <div style="font-size:0.62rem;color:{TEXT_COL};line-height:1.9;margin-top:8px">
-            <span style="color:{CYAN}">BUG v1.4.2</span> m2_gdp_ratio: fix QS resample<br>
-            <span style="color:{CYAN}">BUG v1.4.2</span> m2_velocity: fix QS resample<br>
-            <span style="color:{CYAN}">BUG v1.4.2</span> M2/PIL grafico: sort_index + interpolate<br>
-            <span style="color:{LIME}">NEW v1.4.1</span> GPR Index + eventi storici<br>
-            <span style="color:{LIME}">NEW v1.4.1</span> GPR subplot sottopancia Tab1<br>
-            <span style="color:{LIME}">NEW v1.4.1</span> File uploader CSV GPR sidebar<br>
-            <span style="color:{ORANGE}">UX v1.4.1</span> MOVE → Pilastro A Monetario<br>
-            <span style="color:{ORANGE}">UX v1.4.1</span> DXY lookback 30Y<br>
-            <span style="color:{CYAN}">BUG v1.4</span> HY OAS unita corretta (x100 bp)<br>
-            <span style="color:{CYAN}">BUG v1.4</span> Serie storica: percentile expanding<br>
-            <span style="color:{LIME}">NEW v1.4</span> STLFSI Financial Stress Index<br>
-            <span style="color:{LIME}">NEW v1.4</span> PMI auto-FRED (ISM Mfg + Svc)<br>
-            <span style="color:{LIME}">NEW v1.4</span> Regime Persistence Metric<br>
-            <span style="color:{LIME}">NEW v1.4</span> Tab Backtest rendimenti per regime
+            <span style="color:{CYAN}">FIX v1.5.2</span> Velocity bande grafico invertite<br>
+            <span style="color:{CYAN}">FIX v1.5.2</span> Radar 4 assi + etichette corrette<br>
+            <span style="color:{CYAN}">FIX v1.5.2</span> ISM MFG/SVC serie aggiornate<br>
+            <span style="color:{LIME}">NEW v1.5.1</span> Growth Score = sB diretto<br>
+            <span style="color:{LIME}">NEW v1.5.1</span> PCE proxy rolling 10Y<br>
+            <span style="color:{LIME}">NEW v1.5.0</span> Pilastri C+D fusi → Policy &amp; Structure<br>
+            <span style="color:{LIME}">NEW v1.5.0</span> Pesi: A=25% B=35% CD=25% E=15%<br>
+            <span style="color:{LIME}">NEW v1.5.0</span> UNRATE livello (no diff3)<br>
+            <span style="color:{LIME}">NEW v1.5.0</span> ISM Services Δ3M + Retail YoY aggiunti<br>
+            <span style="color:{ORANGE}">RIM v1.5.0</span> TCU · NFP · Output Gap · Produttività<br>
+            <span style="color:{CYAN}">FIX v1.4.3</span> PMI pct_score · HY OAS bp · Oil YoY<br>
+            <span style="color:{CYAN}">FIX v1.4.3</span> Impulso fiscale invert=False<br>
+            <span style="color:{LIME}">NEW v1.4.1</span> GPR Index · DXY 30Y · MOVE → A
           </div>
         </div>""", unsafe_allow_html=True)
