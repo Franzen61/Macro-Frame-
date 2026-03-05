@@ -1089,7 +1089,7 @@ with tab1:
     with radar_col:
         st.markdown('<div class="section-label">Radar — Profilo Macro</div>', unsafe_allow_html=True)
         cats = ["Monetario", "Econ. Reale", "Fiscale", "Produttivo", "Geopolitico"]
-        vr = [sA, sB, sC, sD, sE]
+        vr = [sA, sB, sCD, sE]
         fig_radar = go.Figure()
         fig_radar.add_trace(go.Scatterpolar(r=vr+[vr[0]], theta=cats+[cats[0]],
             fill="toself", fillcolor="rgba(0,245,196,0.08)",
@@ -1252,8 +1252,7 @@ with tab1:
         for pillar_name, pcol, ind_dict in [
             ("Monetario",   CYAN,    indA),
             ("Econ. Reale", LIME,    indB),
-            ("Fiscale",     ORANGE,  indC),
-            ("Produttivo",  BLUE,    indD),
+            ("Policy & Structure", ORANGE, indCD),
             ("Geopolitico", MAGENTA, indE),
         ]:
             for iname, idata in ind_dict.items():
@@ -2021,7 +2020,7 @@ with tab7:
         <div class="metric-tile" style="margin-bottom:12px">
           <div class="metric-label">REGIME CLASSIFICATION</div>
           <div style="font-size:0.65rem;color:{TEXT_COL};line-height:1.8;margin-top:8px">
-            <b style="color:{CYAN}">Growth Score</b> = media(sB, sD)<br>
+            <b style="color:{CYAN}">Growth Score</b> = media(sB, sCD)<br>
             <b style="color:{ORANGE}">Inflation Proxy</b> = 100 - sA<br><br>
             <b style="color:{CYAN}">GOLDILOCKS</b>: growth &ge;50 · infl &lt;50<br>
             <b style="color:{ORANGE}">INFL. BOOM</b>: growth &ge;50 · infl &ge;50<br>
