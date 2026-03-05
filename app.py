@@ -882,14 +882,16 @@ with st.sidebar:
         '🧭 MACRO CORE ENGINE</div>', unsafe_allow_html=True)
     st.markdown(
         '<div style="font-size:0.58rem;letter-spacing:3px;color:#4a6070;'
-        'text-transform:uppercase;margin-bottom:14px">v1.5.5 · Regime Monitor</div>',
+        'text-transform:uppercase;margin-bottom:14px">v1.5.6 · Regime Monitor</div>',
         unsafe_allow_html=True)
 
     st.markdown('<div class="sidebar-section">📊 PMI Composito</div>', unsafe_allow_html=True)
     st.markdown(f'<div style="font-size:0.55rem;color:{MUTED};margin-bottom:6px">'
         'ISM non disponibile su FRED dal 2016.<br>'
         'Inserisci il valore PMI composito manualmente.<br>'
-        'Fonte: ISM, S&P Global, Investing.com</div>', unsafe_allow_html=True)
+        '<a href="https://it.investing.com/economic-calendar/s-p-global-composite-pmi-1492" '
+        'target="_blank" style="color:#00f5c4">→ S&P Global Composite PMI</a>'
+        '</div>', unsafe_allow_html=True)
     pmi_override_active = st.checkbox("Override PMI manuale", value=True)
     pmi_slider = st.slider("PMI USA/Globale", 35.0, 65.0, 51.9, 0.1,
         disabled=not pmi_override_active)
@@ -984,7 +986,7 @@ regime_label, regime_color, regime_desc = compute_regime(growth_score, inflation
 # ============================================================================
 st.markdown('<div class="main-title">🧭 Macro Core Engine</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="sub-title">4-Pillar Macro Regime Monitor · FRED + yfinance · Percentile Expanding · v1.5.5</div>',
+    '<div class="sub-title">4-Pillar Macro Regime Monitor · FRED + yfinance · Percentile Expanding · v1.5.6</div>',
     unsafe_allow_html=True)
 st.markdown(
     f'<div style="font-size:0.58rem;color:{MUTED};text-align:right;margin-top:2px;margin-bottom:4px">'
