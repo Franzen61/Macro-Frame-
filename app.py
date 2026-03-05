@@ -369,23 +369,21 @@ def load_all_fred():
     d["PAYEMS"]    = load_fred_series("PAYEMS",       20)
     d["PCE"]       = load_fred_series("PCEPILFE",     20)
     d["RETAIL"]    = load_fred_series("RSXFS",        20)
-    # ISM Manufacturing: NAPM (storico fino 2001) + ISMMAN (2001-oggi)
-    # Usiamo ISMMAN come serie principale, fallback su NAPM
-    ism_mfg_new = load_fred_series("ISMMAN", 20)
-    ism_mfg_old = load_fred_series("NAPM",   20)
-    if not ism_mfg_new.empty:
-        d["ISM_MFG"] = ism_mfg_new
-    elif not ism_mfg_old.empty:
-        d["ISM_MFG"] = ism_mfg_old
+    # ISM rimosso da FRED nel 2016 — uso proxy alternativi disponibili
+    # ISM_MFG proxy: OECD Business Confidence USA (scala ~100, correlata a ISM Mfg)
+    # Riscalato: OECD 100 ≈ ISM 50, range tipico 97-103 → riscalo a 35-65
+    oecd_biz = load_fred_series("BSCICP03USM665S", 20)
+    if not oecd_biz.empty:
+        # Riscala OECD Business Confidence (centro 100) → scala ISM (centro 50)
+        d["ISM_MFG"] = (oecd_biz - 100) * 5 + 50  # ogni punto OECD = 5 punti ISM
     else:
         d["ISM_MFG"] = pd.Series(dtype=float)
-    # ISM Services: NMFBAI (storico) + ISMSERV (corrente)
-    ism_svc_new = load_fred_series("ISMSERV", 20)
-    ism_svc_old = load_fred_series("NMFBAI",  20)
-    if not ism_svc_new.empty:
-        d["ISM_SVC"] = ism_svc_new
-    elif not ism_svc_old.empty:
-        d["ISM_SVC"] = ism_svc_old
+    # ISM_SVC proxy: University of Michigan Consumer Sentiment
+    # Riscalato da scala 0-150 → scala ISM 35-65
+    umcsent = load_fred_series("UMCSENT", 20)
+    if not umcsent.empty:
+        # Riscala UMich (range storico 50-110) → scala ISM (centro 50)
+        d["ISM_SVC"] = (umcsent - 80) * 0.25 + 50
     else:
         d["ISM_SVC"] = pd.Series(dtype=float)
     d["DEFICIT"]   = load_fred_series("FYFSGDA188S",  30)
@@ -897,10 +895,13 @@ with st.sidebar:
         '🧭 MACRO CORE ENGINE</div>', unsafe_allow_html=True)
     st.markdown(
         '<div style="font-size:0.58rem;letter-spacing:3px;color:#4a6070;'
-        'text-transform:uppercase;margin-bottom:14px">v1.5.3 · Regime Monitor</div>',
+        'text-transform:uppercase;margin-bottom:14px">v1.5.4 · Regime Monitor</div>',
         unsafe_allow_html=True)
 
     st.markdown('<div class="sidebar-section">📊 PMI Composito</div>', unsafe_allow_html=True)
+    st.markdown(f'<div style="font-size:0.55rem;color:{MUTED};margin-bottom:6px">'
+        'Auto: proxy OECD Biz Conf + UMich Sentiment<br>'
+        'ISM non disponibile su FRED dal 2016</div>', unsafe_allow_html=True)
     pmi_override_active = st.checkbox("Override PMI manuale", value=False)
     pmi_slider = st.slider("PMI USA/Globale", 35.0, 65.0, 52.0, 0.1,
         disabled=not pmi_override_active)
@@ -995,7 +996,7 @@ regime_label, regime_color, regime_desc = compute_regime(growth_score, inflation
 # ============================================================================
 st.markdown('<div class="main-title">🧭 Macro Core Engine</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="sub-title">4-Pillar Macro Regime Monitor · FRED + yfinance · Percentile Expanding · v1.5.3</div>',
+    '<div class="sub-title">4-Pillar Macro Regime Monitor · FRED + yfinance · Percentile Expanding · v1.5.4</div>',
     unsafe_allow_html=True)
 st.markdown(
     f'<div style="font-size:0.58rem;color:{MUTED};text-align:right;margin-top:2px;margin-bottom:4px">'
