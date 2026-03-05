@@ -947,7 +947,7 @@ with st.sidebar:
         '🧭 MACRO CORE ENGINE</div>', unsafe_allow_html=True)
     st.markdown(
         '<div style="font-size:0.58rem;letter-spacing:3px;color:#4a6070;'
-        'text-transform:uppercase;margin-bottom:14px">v1.6.0 · Regime Monitor</div>',
+        'text-transform:uppercase;margin-bottom:14px">v1.6.2 · Regime Monitor</div>',
         unsafe_allow_html=True)
 
     st.markdown('<div class="sidebar-section">📊 PMI Composito</div>', unsafe_allow_html=True)
@@ -1078,7 +1078,7 @@ except Exception:
 # ============================================================================
 st.markdown('<div class="main-title">🧭 Macro Core Engine</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="sub-title">4-Pillar Macro Regime Monitor · FRED + yfinance · Percentile Expanding · v1.6.0</div>',
+    '<div class="sub-title">4-Pillar Macro Regime Monitor · FRED + yfinance · Percentile Expanding · v1.6.2</div>',
     unsafe_allow_html=True)
 st.markdown(
     f'<div style="font-size:0.58rem;color:{MUTED};text-align:right;margin-top:2px;margin-bottom:4px">'
@@ -1172,25 +1172,38 @@ with tab1:
         st.markdown('<div class="section-label">Mappa Quadranti</div>', unsafe_allow_html=True)
         fig_quad = go.Figure()
         lq = base_layout("", 300)
-        lq["xaxis"] = dict(range=[0,100], title="Monetario",
+        # v1.6.1: assi allineati con classificazione regime assoluta
+        # X = Pressione Monetaria (inflation_proxy: PCE YoY rolling 10Y, 0=bassa, 100=alta)
+        # Y = Crescita reale (growth_score = sB, 0=debole, 100=forte)
+        # Quadranti:
+        #   X<50, Y>50 → bassa pressione, alta crescita  = ESPANSIONE EQUILIBRATA  (verde, in alto a sinistra)
+        #   X>50, Y>50 → alta pressione,  alta crescita  = ESPANSIONE SOTTO PRESSIONE (arancio, in alto a destra)
+        #   X>50, Y<50 → alta pressione,  bassa crescita = STAGFLAZIONE             (rosso, in basso a destra)
+        #   X<50, Y<50 → bassa pressione, bassa crescita = DISINFLAZIONE            (blu, in basso a sinistra)
+        lq["xaxis"] = dict(range=[0,100], title="Pressione Monetaria →",
                            gridcolor=GRID_COL, tickfont=dict(size=8, color=MUTED))
-        lq["yaxis"] = dict(range=[0,100], title="Crescita",
+        lq["yaxis"] = dict(range=[0,100], title="Crescita Reale →",
                            gridcolor=GRID_COL, tickfont=dict(size=8, color=MUTED))
         lq["showlegend"] = False
         lq["shapes"] = [
-            dict(type="rect", x0=50, x1=100, y0=50, y1=100, fillcolor="rgba(0,245,196,0.05)", line_width=0),
-            dict(type="rect", x0=0,  x1=50,  y0=50, y1=100, fillcolor="rgba(245,166,35,0.05)", line_width=0),
-            dict(type="rect", x0=50, x1=100, y0=0,  y1=50,  fillcolor="rgba(77,166,255,0.05)", line_width=0),
-            dict(type="rect", x0=0,  x1=50,  y0=0,  y1=50,  fillcolor="rgba(255,77,109,0.05)", line_width=0),
+            dict(type="rect", x0=0,  x1=50, y0=50, y1=100, fillcolor="rgba(0,245,196,0.06)",  line_width=0),  # ESPANSIONE EQUILIBRATA
+            dict(type="rect", x0=50, x1=100,y0=50, y1=100, fillcolor="rgba(245,166,35,0.06)", line_width=0),  # ESPANSIONE SOTTO PRESSIONE
+            dict(type="rect", x0=50, x1=100,y0=0,  y1=50,  fillcolor="rgba(255,77,109,0.06)", line_width=0),  # STAGFLAZIONE
+            dict(type="rect", x0=0,  x1=50, y0=0,  y1=50,  fillcolor="rgba(77,166,255,0.06)", line_width=0),  # DISINFLAZIONE
         ]
         fig_quad.update_layout(**lq)
-        for qx, qy, ql, qc in [(75,75,"ESPANSIONE EQUILIBRATA",CYAN),(25,75,"ESPANSIONE SOTTO PRESSIONE",ORANGE),
-                                (75,25,"DISINFLAZIONE",BLUE),(25,25,"STAGFLAZIONE",RED)]:
+        for qx, qy, ql, qc in [
+            (25, 75, "ESPANSIONE EQUILIBRATA",     CYAN),
+            (75, 75, "ESPANSIONE SOTTO PRESSIONE", ORANGE),
+            (75, 25, "STAGFLAZIONE",               RED),
+            (25, 25, "DISINFLAZIONE",              BLUE),
+        ]:
             fig_quad.add_annotation(x=qx, y=qy, text=f"<b>{ql}</b>",
                 font=dict(family="Syne", size=9, color=qc), showarrow=False)
         fig_quad.add_vline(x=50, line_dash="dash", line_color=GRID_COL, line_width=1)
         fig_quad.add_hline(y=50, line_dash="dash", line_color=GRID_COL, line_width=1)
-        fig_quad.add_trace(go.Scatter(x=[sA], y=[growth_score], mode="markers",
+        # Punto: X=inflation_proxy (pressione monetaria), Y=growth_score (crescita reale)
+        fig_quad.add_trace(go.Scatter(x=[inflation_proxy], y=[growth_score], mode="markers",
             marker=dict(size=16, color=regime_color, line=dict(color="white", width=2)),
             showlegend=False))
         st.plotly_chart(fig_quad, use_container_width=True, config={"displayModeBar": False})
