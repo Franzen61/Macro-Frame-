@@ -839,17 +839,23 @@ def build_historical_composite():
         # Questo evita che anni 70-80 gonfino il percentile nel backtest
         pce_pct_h = exp_pct(pce_y)  # expanding su campione disponibile (25Y caricati)
 
-        # Variabili assolute per classificazione regime v1.6.0
-        gdp_real_m = gdp_real.reindex(ip.index).ffill()
-        gdp_yoy_h  = gdp_real_m  # già YoY dalla FRED (A191RL1Q225SBEA)
-        ur_diff6_h = ur.diff(6)  # variazione disoccupazione 6 mesi
-        ip_yoy_h   = ip_y        # INDPRO YoY già calcolato
-
+        # Colonne core — dropna solo su queste
         df = pd.DataFrame({"sA": sA_h, "sB": sB_h, "sCD": sCD_h,
                            "sE": sE_h, "pce_pct": pce_pct_h,
-                           "gdp_yoy": gdp_yoy_h, "ur_diff6": ur_diff6_h,
-                           "ip_yoy": ip_yoy_h, "pce_yoy": pce_y,
-                           "ry": ry.reindex(ip.index).ffill()}).dropna()
+                           "pce_yoy": pce_y,
+                           "ur_diff6": ur.diff(6),
+                           "ip_yoy": ip_y,
+                           "ry": ry.reindex(sA_h.index).ffill()
+                           }).dropna(subset=["sA","sB","sCD","pce_pct"])
+
+        # GDP reale YoY — aggiunto separatamente per non azzerare il df
+        # A191RL1Q225SBEA è già in % YoY, trimestrale → ffill mensile
+        try:
+            gdp_real_m = gdp_real.reindex(df.index, method="ffill")
+            df["gdp_yoy"] = gdp_real_m
+        except Exception:
+            df["gdp_yoy"] = np.nan
+
         # Pesi v1.5.0: A=25% B=35% CD=25% E=15%
         df["Composite"]  = df["sA"]*0.25 + df["sB"]*0.35 + df["sCD"]*0.25 + df["sE"]*0.15
         df["Monetario"]  = df["sA"]
@@ -857,7 +863,7 @@ def build_historical_composite():
         df["Policy"]     = df["sCD"]
         df["PCE_pct"]    = df["pce_pct"]
         return df[["Composite","Monetario","Econ.Reale","Policy","PCE_pct",
-                   "gdp_yoy","ur_diff6","ip_yoy","pce_yoy","ry"]].dropna()
+                   "gdp_yoy","ur_diff6","ip_yoy","pce_yoy","ry"]]
     except Exception:
         return pd.DataFrame()
 
