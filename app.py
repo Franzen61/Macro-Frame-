@@ -880,7 +880,7 @@ with st.sidebar:
         '🧭 MACRO CORE ENGINE</div>', unsafe_allow_html=True)
     st.markdown(
         '<div style="font-size:0.58rem;letter-spacing:3px;color:#4a6070;'
-        'text-transform:uppercase;margin-bottom:14px">v1.5.1 · Regime Monitor</div>',
+        'text-transform:uppercase;margin-bottom:14px">v1.5.2 · Regime Monitor</div>',
         unsafe_allow_html=True)
 
     st.markdown('<div class="sidebar-section">📊 PMI Composito</div>', unsafe_allow_html=True)
@@ -957,14 +957,14 @@ growth_score    = float(sB)
 pce_series = fred_data.get("PCE", pd.Series())
 if not pce_series.empty:
     pce_yoy_regime = yoy(pce_series).resample("M").last().dropna()
-    # v1.5.1: lookback 25Y — esclude anni 70-80 (inflazione 10%) che gonfiano
-    # il percentile e classificano PCE 2.6% come "alta inflazione" (83° pct)
-    cutoff_25y = pd.Timestamp.now() - pd.DateOffset(years=25)
-    pce_yoy_25y = pce_yoy_regime[pce_yoy_regime.index >= cutoff_25y]
-    if len(pce_yoy_25y) >= 20:
-        inflation_proxy = float(pct_score(pce_yoy_25y))
-    elif len(pce_yoy_regime) >= 20:
-        inflation_proxy = float(pct_score(pce_yoy_regime))
+    # v1.5.2: rolling 10Y — misura inflazione nel contesto recente
+    # expanding confronta con tutta la storia incluso picco 2022 → distorce
+    # rolling 10Y: PCE 2.6% si confronta con range 2015-oggi → più realistico
+    if len(pce_yoy_regime) >= 24:
+        window = min(120, len(pce_yoy_regime))  # 10 anni = 120 mesi
+        last_val = float(pce_yoy_regime.iloc[-1])
+        last_window = pce_yoy_regime.iloc[-window:]
+        inflation_proxy = float((last_window < last_val).mean() * 100)
     else:
         inflation_proxy = 100 - sA
 else:
@@ -978,7 +978,7 @@ regime_label, regime_color, regime_desc = compute_regime(growth_score, inflation
 # ============================================================================
 st.markdown('<div class="main-title">🧭 Macro Core Engine</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="sub-title">4-Pillar Macro Regime Monitor · FRED + yfinance · Percentile Expanding · v1.5.1</div>',
+    '<div class="sub-title">4-Pillar Macro Regime Monitor · FRED + yfinance · Percentile Expanding · v1.5.2</div>',
     unsafe_allow_html=True)
 st.markdown(
     f'<div style="font-size:0.58rem;color:{MUTED};text-align:right;margin-top:2px;margin-bottom:4px">'
