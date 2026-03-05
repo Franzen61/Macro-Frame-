@@ -1,8 +1,22 @@
 """
-MACRO CORE ENGINE v1.4.3
+MACRO CORE ENGINE v1.5.0
 ========================
 5-Pillar Macro Regime Monitor
 Companion: Settoriale · Commodity Supercycle · Bond Monitor · Equity Pulse
+
+v1.5.0 — audit empirico scoring engine (TradingView + letteratura):
+  - UNRATE: diff(3) → livello (pct_score invert=True, correlazione 0.75 vs SPY)
+  - NFP diff(3): rimosso da score (correlazione -0.53, COVID spike distorce)
+  - TCU: rimosso da score (correlazione -0.18, economia servizi dominante)
+  - Output Gap: rimosso da score (derivato da INDPRO debole)
+  - Produttività YoY: rimossa da score (derivato da INDPRO debole)
+  - Debito/PIL: solo informativo (trend monotono → pct_score invalido)
+  - Pilastri C+D fusi in "Policy & Structure" (Bridgewater framework)
+  - ISM Services delta: aggiunto a pilastro C+D
+  - Retail Sales YoY: aggiunto a pilastro C+D
+  - Pesi rivisti: A=25% B=35% CD=25% E=15% (basati su correlazioni empiriche)
+  - Proxy inflazione regime: PCE YoY percentile invece di 100-Monetario
+  - build_historical_composite: allineato con nuovo scoring engine
 
 v1.4.3 — audit scoring engine:
   - PMI: formula lineare → pct_score expanding su serie ISM storica (confrontabile)
@@ -596,20 +610,18 @@ def score_real_economy(d, pmi_override):
                                   "series": ip_yoy, "unit": "%", "desc": "Produzione industriale YoY"}
 
     if not d["UNRATE"].empty:
-        du = d["UNRATE"].diff(3).dropna().resample("M").last()
-        if not du.empty:
-            s = pct_score(du, invert=True)
+        # v1.5.0: livello invece di diff(3) — correlazione 0.75 vs SPY stabile su 30Y
+        # diff(3) introduceva COVID spike che distorceva il percentile expanding
+        ur_m = d["UNRATE"].resample("M").last()
+        if not ur_m.empty:
+            s = pct_score(ur_m, invert=True)  # disoccupazione bassa = bull
             scores.append(s)
-            ind["Disoccupazione D3M"] = {"value": fmt(float(du.iloc[-1]), 2), "score": s,
-                                          "series": du, "unit": "pp", "desc": "Var 3M · neg = miglioramento"}
+            ind["Disoccupazione"] = {"value": fmt(float(ur_m.iloc[-1]), 1), "score": s,
+                                      "series": ur_m, "unit": "%",
+                                      "desc": "UNRATE · bassa = mercato lavoro forte · corr. 0.75 vs SPY"}
 
-    if not d["PAYEMS"].empty:
-        nfp3 = (d["PAYEMS"].diff(3) / 1000).dropna().resample("M").last()
-        if not nfp3.empty:
-            s = pct_score(nfp3)
-            scores.append(s)
-            ind["NFP D3M"] = {"value": fmt(float(nfp3.iloc[-1]), 0), "score": s,
-                               "series": nfp3, "unit": "K", "desc": "Occupazione non-agricola 3M"}
+    # v1.5.0: NFP diff(3) rimosso — correlazione -0.53 vs SPY, COVID spike distorce
+    # NFP rimane come grafico informativo nel tab ma non entra nello score
 
     if not d["PCE"].empty:
         pce_yoy = yoy(d["PCE"]).resample("M").last()
@@ -622,14 +634,20 @@ def score_real_economy(d, pmi_override):
     return round(float(np.mean(scores)) if scores else 50.0, 1), ind, pmi_source
 
 
-def score_fiscal(d):
+def score_policy_structure(d):
+    """
+    v1.5.0: Pilastri C+D fusi in "Policy & Structure" (Bridgewater framework).
+    Rimossi: TCU (corr -0.18), Output Gap (INDPRO debole), Produttività (INDPRO debole),
+             Debito/PIL (trend monotono, pct_score invalido).
+    Aggiunti: ISM Services delta, Retail Sales YoY.
+    Mantenuti: Impulso Fiscale, ULC YoY.
+    """
     ind, scores = {}, []
+
+    # Impulso Fiscale — leva stimolo/contrazione
     if not d["DEFICIT"].empty:
         impulse = d["DEFICIT"].diff(1).dropna()
         if not impulse.empty:
-            # v1.4.3: invert=False — impulso espansivo (deficit crescente, valore più negativo)
-            # è stimolativo → bull per crescita nel breve. Penalizzare solo quando si contrae.
-            # Nota: FYFSGDA188S è deficit come % PIL con segno negativo → diff più negativo = più stimolo
             s = pct_score(impulse, invert=False)
             scores.append(s)
             ind["Impulso Fiscale"] = {"value": fmt(float(impulse.iloc[-1]), 2), "score": s,
@@ -637,42 +655,43 @@ def score_fiscal(d):
                                        "desc": "Delta deficit/PIL · espansivo = bull breve termine"}
         ind["Deficit/PIL"] = {"value": fmt(float(d["DEFICIT"].iloc[-1]), 1), "score": None,
                                "series": d["DEFICIT"], "unit": "% PIL", "desc": "Solo informativo"}
+    # Debito/PIL — solo informativo (trend monotono invalida pct_score)
     if not d["DEBT_GDP"].empty:
-        s = pct_score(d["DEBT_GDP"], invert=True)
-        scores.append(s)
-        ind["Debito/PIL"] = {"value": fmt(float(d["DEBT_GDP"].iloc[-1]), 1), "score": s,
-                              "series": d["DEBT_GDP"], "unit": "%", "desc": "Debito federale / PIL"}
-    return round(float(np.mean(scores)) if scores else 50.0, 1), ind
+        ind["Debito/PIL"] = {"value": fmt(float(d["DEBT_GDP"].iloc[-1]), 1), "score": None,
+                              "series": d["DEBT_GDP"], "unit": "%",
+                              "desc": "Debito federale / PIL · solo informativo (trend strutturale)"}
 
-
-def score_productive(d):
-    ind, scores = {}, []
-    if not d["TCU"].empty:
-        s = pct_score(d["TCU"])
-        scores.append(s)
-        ind["Capacity Utilization"] = {"value": fmt(float(d["TCU"].iloc[-1]), 1), "score": s,
-                                        "series": d["TCU"], "unit": "%", "desc": "Utilizzo capacita' produttiva"}
+    # ULC YoY — costi lavoro, pressione margini
     if not d["ULC"].empty:
         ulc_yoy = yoy(d["ULC"], 4).resample("Q").last()
         if not ulc_yoy.empty:
             s = pct_score(ulc_yoy, invert=True)
             scores.append(s)
             ind["ULC YoY"] = {"value": fmt(float(ulc_yoy.iloc[-1]), 2), "score": s,
-                               "series": ulc_yoy, "unit": "%", "desc": "Unit labor costs YoY"}
-    if not d["INDPRO"].empty:
-        gap = output_gap_proxy(d["INDPRO"].resample("M").last())
-        if not gap.empty:
-            s = pct_score(gap)
+                               "series": ulc_yoy, "unit": "%",
+                               "desc": "Unit labor costs YoY · alto = pressione margini"}
+
+    # ISM Services delta — Hedge Fund Journal: tra i top 6 leading indicators
+    if not d.get("ISM_SVC", pd.Series()).empty:
+        ism_svc = d["ISM_SVC"].resample("M").last()
+        ism_delta = ism_svc.diff(3).dropna()  # accelerazione trimestrale ISM
+        if len(ism_delta) >= 20:
+            s = pct_score(ism_delta)  # delta positivo = accelerazione = bull
             scores.append(s)
-            ind["Output Gap"] = {"value": fmt(float(gap.iloc[-1]), 2), "score": s,
-                                  "series": gap, "unit": "%", "desc": "Deviazione INDPRO da trend"}
-    if not d["PRODUC"].empty:
-        prod_yoy = yoy(d["PRODUC"], 4).resample("Q").last()
-        if not prod_yoy.empty:
-            s = pct_score(prod_yoy)
+            ind["ISM Services Δ3M"] = {"value": fmt(float(ism_svc.iloc[-1]), 1), "score": s,
+                                        "series": ism_delta, "unit": "",
+                                        "desc": "ISM Services accelerazione 3M · positivo = espansione"}
+
+    # Retail Sales YoY — consumi 70% PIL USA
+    if not d["RETAIL"].empty:
+        ret_yoy = yoy(d["RETAIL"]).resample("M").last()
+        if not ret_yoy.empty:
+            s = pct_score(ret_yoy)
             scores.append(s)
-            ind["Produttivita' YoY"] = {"value": fmt(float(prod_yoy.iloc[-1]), 2), "score": s,
-                                         "series": prod_yoy, "unit": "%", "desc": "Output per ora lavorata"}
+            ind["Retail Sales YoY"] = {"value": fmt(float(ret_yoy.iloc[-1]), 1), "score": s,
+                                        "series": ret_yoy, "unit": "%",
+                                        "desc": "Consumi al dettaglio YoY · 70% PIL USA"}
+
     return round(float(np.mean(scores)) if scores else 50.0, 1), ind
 
 
@@ -766,26 +785,29 @@ def build_historical_composite():
                 raw=True)
             return (100 - res) if inv else res
 
-        # v1.4.3: allineamento con scoring engine aggiornato
-        # sA: Monetario — rimosso M2/PIL (ridondante con velocity), aggiunto velocity
+        # v1.5.0: allineamento con scoring engine rivisto
+        # sA: Monetario — velocity + real yield + HY OAS
         vel_h = (gdp / m2).dropna()
         sA_h = (exp_pct(vel_h, inv=True) + exp_pct(ry, inv=True) + exp_pct(hy, inv=True)) / 3
-        # sB: Econ.Reale — invariato
-        sB_h = (exp_pct(ip_y) + exp_pct(ur3, inv=True) +
-                exp_pct(nfp3) + exp_pct(abs(pce_y - 2.0), inv=True)) / 4
-        # sC: Fiscale — impulso fiscale ora invert=False (espansivo = bull breve)
-        sC_h = (exp_pct(imp_f, inv=False) + exp_pct(debt, inv=True)) / 2
-        # sD: Produttivo — invariato
-        sD_h = (exp_pct(tcu) + exp_pct(ulc_y, inv=True)) / 2
+        # sB: Econ.Reale — UNRATE livello (non diff3), INDPRO YoY, PCE YoY
+        sB_h = (exp_pct(ip_y) + exp_pct(ur, inv=True) +
+                exp_pct(abs(pce_y - 2.0), inv=True)) / 3
+        # sCD: Policy & Structure — impulso fiscale + ULC YoY
+        sCD_h = (exp_pct(imp_f, inv=False) + exp_pct(ulc_y, inv=True)) / 2
         sE_h = pd.Series(50.0, index=sA_h.index)
 
-        df = pd.DataFrame({"sA": sA_h, "sB": sB_h, "sC": sC_h, "sD": sD_h, "sE": sE_h}).dropna()
-        df["Composite"]  = df["sA"]*0.20 + df["sB"]*0.30 + df["sC"]*0.15 + df["sD"]*0.15 + df["sE"]*0.20
+        # Proxy inflazione regime: PCE YoY percentile (non 100-Monetario)
+        pce_pct_h = exp_pct(pce_y)  # percentile expanding PCE YoY
+
+        df = pd.DataFrame({"sA": sA_h, "sB": sB_h, "sCD": sCD_h,
+                           "sE": sE_h, "pce_pct": pce_pct_h}).dropna()
+        # Pesi v1.5.0: A=25% B=35% CD=25% E=15%
+        df["Composite"]  = df["sA"]*0.25 + df["sB"]*0.35 + df["sCD"]*0.25 + df["sE"]*0.15
         df["Monetario"]  = df["sA"]
         df["Econ.Reale"] = df["sB"]
-        df["Fiscale"]    = df["sC"]
-        df["Produttivo"] = df["sD"]
-        return df[["Composite","Monetario","Econ.Reale","Fiscale","Produttivo"]].dropna()
+        df["Policy"]     = df["sCD"]
+        df["PCE_pct"]    = df["pce_pct"]
+        return df[["Composite","Monetario","Econ.Reale","Policy","PCE_pct"]].dropna()
     except Exception:
         return pd.DataFrame()
 
@@ -797,7 +819,13 @@ def build_regime_backtest(hist_df):
     try:
         hist = hist_df.copy()
         hist["growth"]    = hist["Econ.Reale"]
-        hist["inflation"] = 100 - hist["Monetario"]
+        # v1.5.0: PCE YoY percentile expanding come proxy inflazione
+        # 100-Monetario misurava stress finanziario, non inflazione CPI
+        # causava 2008-2009 classificato STAGFLATION invece di DISINFL.BUST
+        if "PCE_pct" in hist.columns:
+            hist["inflation"] = hist["PCE_pct"]
+        else:
+            hist["inflation"] = 100 - hist["Monetario"]
 
         def classify(row):
             if row["growth"] >= 50 and row["inflation"] < 50:  return "GOLDILOCKS"
@@ -850,7 +878,7 @@ with st.sidebar:
         '🧭 MACRO CORE ENGINE</div>', unsafe_allow_html=True)
     st.markdown(
         '<div style="font-size:0.58rem;letter-spacing:3px;color:#4a6070;'
-        'text-transform:uppercase;margin-bottom:14px">v1.4.2 · Regime Monitor</div>',
+        'text-transform:uppercase;margin-bottom:14px">v1.5.0 · Regime Monitor</div>',
         unsafe_allow_html=True)
 
     st.markdown('<div class="sidebar-section">📊 PMI Composito</div>', unsafe_allow_html=True)
@@ -909,16 +937,28 @@ fred_data["MOVE"] = mkt_data.get("MOVE", pd.Series(dtype=float))
 
 sA, indA          = score_monetary(fred_data)
 sB, indB, pmi_src = score_real_economy(fred_data, pmi_manual)
-sC, indC          = score_fiscal(fred_data)
-sD, indD          = score_productive(fred_data)
+sCD, indCD        = score_policy_structure(fred_data)
 sE, indE          = score_geopolitical(mkt_data, gpr_df)
 
+# v1.5.0: pesi rivisti su base empirica (correlazioni TradingView + letteratura)
+# A=25% (M2 Reale corr 0.91), B=35% (UNRATE corr 0.75, dominante), CD=25%, E=15%
 pillar_scores = {"A · Monetario": sA, "B · Econ. Reale": sB,
-                 "C · Fiscale": sC, "D · Produttivo": sD, "E · Geopolitico": sE}
+                 "C+D · Policy & Structure": sCD, "E · Geopolitico": sE}
 
-growth_score    = float(np.mean([sB, sD]))
-inflation_proxy = 100 - sA
-composite       = float(np.mean(list(pillar_scores.values())))
+composite       = sA*0.25 + sB*0.35 + sCD*0.25 + sE*0.15
+growth_score    = float(np.mean([sB, sCD]))
+# v1.5.0: proxy inflazione = PCE YoY percentile (non più 100-Monetario)
+# 100-Monetario misurava condizioni finanziarie restrittive, non inflazione CPI
+# Questo causava 2008-2009 classificato STAGFLATION invece di DISINFL.BUST
+pce_series = fred_data.get("PCE", pd.Series())
+if not pce_series.empty:
+    pce_yoy_regime = yoy(pce_series).resample("M").last().dropna()
+    if len(pce_yoy_regime) >= 20:
+        inflation_proxy = float(pct_score(pce_yoy_regime))
+    else:
+        inflation_proxy = 100 - sA
+else:
+    inflation_proxy = 100 - sA
 breadth         = float(np.mean([s > 50 for s in pillar_scores.values()]) * 100)
 confidence      = float(np.mean([abs(s - 50) for s in pillar_scores.values()]))
 regime_label, regime_color, regime_desc = compute_regime(growth_score, inflation_proxy)
@@ -928,7 +968,7 @@ regime_label, regime_color, regime_desc = compute_regime(growth_score, inflation
 # ============================================================================
 st.markdown('<div class="main-title">🧭 Macro Core Engine</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="sub-title">5-Pillar Macro Regime Monitor · FRED + yfinance · Percentile Expanding · v1.4.2</div>',
+    '<div class="sub-title">4-Pillar Macro Regime Monitor · FRED + yfinance · Percentile Expanding · v1.5.0</div>',
     unsafe_allow_html=True)
 st.markdown(
     f'<div style="font-size:0.58rem;color:{MUTED};text-align:right;margin-top:2px;margin-bottom:4px">'
@@ -1490,15 +1530,15 @@ with tab3:
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TAB 4 — FISCALE + PRODUTTIVO
+# TAB 4 — POLICY & STRUCTURE (ex Fiscale + Produttivo)
 # ─────────────────────────────────────────────────────────────────────────────
 with tab4:
-    st.markdown('<div class="section-label">C · Pilastro Fiscale</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-label">C+D · Policy & Structure</div>', unsafe_allow_html=True)
     fc1, fc2 = st.columns([1, 2])
     with fc1:
-        st.markdown(tile_html("SCORE PILASTRO C", f"{sC:.0f}/100", "Fiscale",
-            score_cc(sC), score_pill(sC)), unsafe_allow_html=True)
-        for iname, idata in indC.items():
+        st.markdown(tile_html("SCORE PILASTRO C+D", f"{sCD:.0f}/100", "Policy & Structure",
+            score_cc(sCD), score_pill(sCD)), unsafe_allow_html=True)
+        for iname, idata in indCD.items():
             sc = idata.get("score")
             if sc is None: continue
             st.markdown(tile_html(iname.upper(),
@@ -1507,67 +1547,68 @@ with tab4:
                 score_cc(sc), score_pill(sc)), unsafe_allow_html=True)
     with fc2:
         cut = cutoff_date(years_display)
+        # Impulso Fiscale
         if not fred_data["DEFICIT"].empty:
-            def_d = fbd(fred_data["DEFICIT"], cut)
+            imp_f = fred_data["DEFICIT"].diff(1).dropna()
+            imp_d = fbd(imp_f, cut)
             fig = go.Figure()
             fig.add_hline(y=0, line_dash="solid", line_color=GRID_COL, line_width=1)
-            fig.add_trace(go.Scatter(x=def_d.index, y=def_d,
+            fig.add_trace(go.Scatter(x=imp_d.index, y=imp_d,
                 line=dict(color=ORANGE, width=2), fill="tozeroy",
-                fillcolor="rgba(245,166,35,0.07)", name="Deficit/PIL"))
-            fig.update_layout(**base_layout("Deficit Federale / PIL (%)", 240))
+                fillcolor="rgba(245,166,35,0.07)", name="Impulso Fiscale"))
+            add_percentile_bands(fig, imp_f, invert=False)
+            fig.update_layout(**base_layout("Impulso Fiscale — Delta Deficit/PIL (%)", 230))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+        col_ulc, col_ism = st.columns(2)
+        with col_ulc:
+            if not fred_data["ULC"].empty:
+                ulc_yoy = yoy(fred_data["ULC"], 4).resample("Q").last()
+                ulc_d   = fbd(ulc_yoy, cut)
+                fig = go.Figure()
+                fig.add_hline(y=0, line_dash="solid", line_color=GRID_COL, line_width=1)
+                fig.add_trace(go.Scatter(x=ulc_d.index, y=ulc_d,
+                    line=dict(color=PURPLE, width=2), fill="tozeroy",
+                    fillcolor="rgba(187,136,255,0.07)", name="ULC YoY"))
+                add_percentile_bands(fig, ulc_yoy, invert=True)
+                fig.update_layout(**base_layout("Unit Labor Costs YoY (%)", 220))
+                st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        with col_ism:
+            if not fred_data.get("ISM_SVC", pd.Series()).empty:
+                ism_svc = fred_data["ISM_SVC"].resample("M").last()
+                ism_d   = fbd(ism_svc, cut)
+                fig = go.Figure()
+                fig.add_hline(y=50, line_dash="dot", line_color=CYAN, line_width=1,
+                    annotation_text="50 neutro", annotation_font=dict(color=CYAN, size=8))
+                fig.add_trace(go.Scatter(x=ism_d.index, y=ism_d,
+                    line=dict(color=CYAN, width=2), name="ISM Services"))
+                add_percentile_bands(fig, ism_svc, invert=False)
+                fig.update_layout(**base_layout("ISM Services Index", 220))
+                st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+        if not fred_data["RETAIL"].empty:
+            ret_yoy = yoy(fred_data["RETAIL"])
+            ret_d   = fbd(ret_yoy, cut)
+            fig = go.Figure()
+            fig.add_hline(y=0, line_dash="solid", line_color=GRID_COL, line_width=1)
+            fig.add_trace(go.Scatter(x=ret_d.index, y=ret_d,
+                line=dict(color=LIME, width=2), fill="tozeroy",
+                fillcolor="rgba(198,255,26,0.07)", name="Retail YoY"))
+            add_percentile_bands(fig, ret_yoy, invert=False)
+            fig.update_layout(**base_layout("Retail Sales YoY (%) — consumi 70% PIL", 220))
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+        # Debito/PIL — solo informativo
         if not fred_data["DEBT_GDP"].empty:
             debt_d = fbd(fred_data["DEBT_GDP"], cut)
             fig = go.Figure()
             fig.add_trace(go.Scatter(x=debt_d.index, y=debt_d,
-                line=dict(color=RED, width=2), fill="tozeroy",
-                fillcolor="rgba(255,77,109,0.07)", name="Debito/PIL"))
-            fig.update_layout(**base_layout("Debito Federale / PIL (%)", 230))
+                line=dict(color=RED, width=1.5), fill="tozeroy",
+                fillcolor="rgba(255,77,109,0.05)", name="Debito/PIL"))
+            fig.update_layout(**base_layout("Debito Federale / PIL (%) — solo informativo", 200))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-    st.markdown('<div class="section-label">D · Pilastro Produttivo</div>', unsafe_allow_html=True)
-    dc1, dc2 = st.columns([1, 2])
-    with dc1:
-        st.markdown(tile_html("SCORE PILASTRO D", f"{sD:.0f}/100", "Produttivo",
-            score_cc(sD), score_pill(sD)), unsafe_allow_html=True)
-        for iname, idata in indD.items():
-            sc = idata.get("score")
-            if sc is None: continue
-            st.markdown(tile_html(iname.upper(),
-                idata["value"] + " " + idata["unit"],
-                "Score: " + str(round(sc)) + "/100 · " + idata["desc"],
-                score_cc(sc), score_pill(sc)), unsafe_allow_html=True)
-    with dc2:
-        cut = cutoff_date(years_display)
-        if not fred_data["TCU"].empty:
-            tcu_d = fbd(fred_data["TCU"], cut)
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=tcu_d.index, y=tcu_d,
-                line=dict(color=BLUE, width=2), fill="tozeroy",
-                fillcolor="rgba(77,166,255,0.07)", name="TCU"))
-            add_percentile_bands(fig, fred_data["TCU"], invert=False)
-            fig.update_layout(**base_layout("Capacity Utilization (%) — con bande 25p/75p", 240))
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-        if not fred_data["ULC"].empty:
-            ulc_yoy = yoy(fred_data["ULC"], 4).resample("Q").last()
-            ulc_d   = fbd(ulc_yoy, cut)
-            fig = go.Figure()
-            fig.add_hline(y=0, line_dash="solid", line_color=GRID_COL, line_width=1)
-            fig.add_trace(go.Scatter(x=ulc_d.index, y=ulc_d,
-                line=dict(color=ORANGE, width=2), fill="tozeroy",
-                fillcolor="rgba(245,166,35,0.07)", name="ULC YoY"))
-            fig.update_layout(**base_layout("Unit Labor Costs YoY (%)", 220))
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-        if not fred_data["PRODUC"].empty:
-            prod_yoy = yoy(fred_data["PRODUC"], 4).resample("Q").last()
-            prod_d   = fbd(prod_yoy, cut)
-            fig = go.Figure()
-            fig.add_hline(y=0, line_dash="solid", line_color=GRID_COL, line_width=1)
-            fig.add_trace(go.Scatter(x=prod_d.index, y=prod_d,
-                line=dict(color=PURPLE, width=2), fill="tozeroy",
-                fillcolor="rgba(187,136,255,0.07)", name="Produttivita YoY"))
-            fig.update_layout(**base_layout("Produttivita YoY (%) — output per ora", 220))
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    # Grafici C+D nella colonna destra (già nel blocco fc2)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 5 — GEOPOLITICO
