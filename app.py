@@ -796,8 +796,9 @@ def build_historical_composite():
         sCD_h = (exp_pct(imp_f, inv=False) + exp_pct(ulc_y, inv=True)) / 2
         sE_h = pd.Series(50.0, index=sA_h.index)
 
-        # Proxy inflazione regime: PCE YoY percentile (non 100-Monetario)
-        pce_pct_h = exp_pct(pce_y)  # percentile expanding PCE YoY
+        # Proxy inflazione regime: PCE YoY — expanding ma su finestra 25Y
+        # Questo evita che anni 70-80 gonfino il percentile nel backtest
+        pce_pct_h = exp_pct(pce_y)  # expanding su campione disponibile (25Y caricati)
 
         df = pd.DataFrame({"sA": sA_h, "sB": sB_h, "sCD": sCD_h,
                            "sE": sE_h, "pce_pct": pce_pct_h}).dropna()
@@ -818,6 +819,7 @@ def build_historical_composite():
 def build_regime_backtest(hist_df):
     try:
         hist = hist_df.copy()
+        # v1.5.1: growth = sB (Econ.Reale) diretto — non media con Policy
         hist["growth"]    = hist["Econ.Reale"]
         # v1.5.0: PCE YoY percentile expanding come proxy inflazione
         # 100-Monetario misurava stress finanziario, non inflazione CPI
@@ -878,7 +880,7 @@ with st.sidebar:
         '🧭 MACRO CORE ENGINE</div>', unsafe_allow_html=True)
     st.markdown(
         '<div style="font-size:0.58rem;letter-spacing:3px;color:#4a6070;'
-        'text-transform:uppercase;margin-bottom:14px">v1.5.0 · Regime Monitor</div>',
+        'text-transform:uppercase;margin-bottom:14px">v1.5.1 · Regime Monitor</div>',
         unsafe_allow_html=True)
 
     st.markdown('<div class="sidebar-section">📊 PMI Composito</div>', unsafe_allow_html=True)
@@ -946,14 +948,22 @@ pillar_scores = {"A · Monetario": sA, "B · Econ. Reale": sB,
                  "C+D · Policy & Structure": sCD, "E · Geopolitico": sE}
 
 composite       = sA*0.25 + sB*0.35 + sCD*0.25 + sE*0.15
-growth_score    = float(np.mean([sB, sCD]))
+# v1.5.1: growth_score = sB diretto — correlazione 0.75 vs SPY, più predittivo
+# sCD contiene impulso fiscale/strutturale che è lento e distorce il segnale ciclico
+growth_score    = float(sB)
 # v1.5.0: proxy inflazione = PCE YoY percentile (non più 100-Monetario)
 # 100-Monetario misurava condizioni finanziarie restrittive, non inflazione CPI
 # Questo causava 2008-2009 classificato STAGFLATION invece di DISINFL.BUST
 pce_series = fred_data.get("PCE", pd.Series())
 if not pce_series.empty:
     pce_yoy_regime = yoy(pce_series).resample("M").last().dropna()
-    if len(pce_yoy_regime) >= 20:
+    # v1.5.1: lookback 25Y — esclude anni 70-80 (inflazione 10%) che gonfiano
+    # il percentile e classificano PCE 2.6% come "alta inflazione" (83° pct)
+    cutoff_25y = pd.Timestamp.now() - pd.DateOffset(years=25)
+    pce_yoy_25y = pce_yoy_regime[pce_yoy_regime.index >= cutoff_25y]
+    if len(pce_yoy_25y) >= 20:
+        inflation_proxy = float(pct_score(pce_yoy_25y))
+    elif len(pce_yoy_regime) >= 20:
         inflation_proxy = float(pct_score(pce_yoy_regime))
     else:
         inflation_proxy = 100 - sA
@@ -968,7 +978,7 @@ regime_label, regime_color, regime_desc = compute_regime(growth_score, inflation
 # ============================================================================
 st.markdown('<div class="main-title">🧭 Macro Core Engine</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="sub-title">4-Pillar Macro Regime Monitor · FRED + yfinance · Percentile Expanding · v1.5.0</div>',
+    '<div class="sub-title">4-Pillar Macro Regime Monitor · FRED + yfinance · Percentile Expanding · v1.5.1</div>',
     unsafe_allow_html=True)
 st.markdown(
     f'<div style="font-size:0.58rem;color:{MUTED};text-align:right;margin-top:2px;margin-bottom:4px">'
