@@ -186,7 +186,7 @@ MUTED    = "#7a9ab0"
 GOLD_COL = "#f7c948"
 PURPLE   = "#bb88ff"
 
-FRED_API_KEY = "938a76ed726e8351f43e1b0c36365784"
+FRED_API_KEY = st.secrets.get("FRED_API_KEY", "")
 
 # ============================================================================
 # GPR EVENTS
@@ -452,7 +452,7 @@ def m2_velocity(m2, gdp):
         return pd.Series(dtype=float)
 
 def yoy(series, periods=12):
-    return series.pct_change(periods).mul(100).dropna()
+    return series.pct_change(periods, fill_method=None).mul(100).dropna()
 
 def output_gap_proxy(indpro):
     """
