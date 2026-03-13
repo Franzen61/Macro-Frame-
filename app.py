@@ -843,18 +843,18 @@ def build_historical_composite():
 
         # Proxy inflazione regime: PCE YoY — expanding ma su finestra 25Y
         # Questo evita che anni 70-80 gonfino il percentile nel backtest
-        pce_pct_h = exp_pct(pce_y)  # expanding su campione disponibile (25Y caricati)
+        # v1.6.4 FIX: ffill prima del DataFrame — PCEPILFE ha ritardo 2-3 mesi
+        # che troncava il composite a settembre 2025 invece di marzo 2026
+        pce_pct_h = exp_pct(pce_y).reindex(sA_h.index).ffill()
 
-        # v1.6.3 FIX: "sCD" rimosso dal subset obbligatorio del dropna —
-        # ULC tardivo non tronca più il composite storico.
-        # sCD è già robusto grazie a ffill+fillna(50) sopra.
+        # dropna solo su sA e sB — entrambi mensili e aggiornati in tempo reale
         df = pd.DataFrame({"sA": sA_h, "sB": sB_h, "sCD": sCD_h,
                            "sE": sE_h, "pce_pct": pce_pct_h,
-                           "pce_yoy": pce_y,
-                           "ur_diff6": ur.diff(6),
-                           "ip_yoy": ip_y,
+                           "pce_yoy": pce_y.reindex(sA_h.index).ffill(),
+                           "ur_diff6": ur.diff(6).reindex(sA_h.index).ffill(),
+                           "ip_yoy": ip_y.reindex(sA_h.index).ffill(),
                            "ry": ry.reindex(sA_h.index).ffill()
-                           }).dropna(subset=["sA","sB","pce_pct"])
+                           }).dropna(subset=["sA","sB"])
 
         # GDP reale YoY — aggiunto separatamente per non azzerare il df
         # A191RL1Q225SBEA è già in % YoY, trimestrale → ffill mensile
