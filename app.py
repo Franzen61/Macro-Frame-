@@ -830,8 +830,10 @@ def build_historical_composite():
         sA_h = (exp_pct(vel_h, inv=True).reindex(ry.index).ffill() + exp_pct(ry, inv=True) + exp_pct(hy, inv=True)) / 3
         
         # sB: Econ.Reale — UNRATE livello (non diff3), INDPRO YoY, PCE YoY
-        sB_h = (exp_pct(ip_y) + exp_pct(ur, inv=True) +
-                exp_pct(abs(pce_y - 2.0), inv=True)) / 3
+        ref_idx = ry.index  # ry arriva a marzo 2026 — indice di riferimento
+        sB_h = (exp_pct(ip_y).reindex(ref_idx).ffill() +
+                exp_pct(ur, inv=True).reindex(ref_idx).ffill() +
+                exp_pct(abs(pce_y - 2.0), inv=True).reindex(ref_idx).ffill()) / 3
         # sCD: Policy & Structure — impulso fiscale + ULC YoY
         # v1.6.3 FIX: ULC (ULCNFB) ha ritardo pubblicazione ~3-4 trimestri.
         # reindex su sA_h.index + ffill propaga l'ultimo valore disponibile;
