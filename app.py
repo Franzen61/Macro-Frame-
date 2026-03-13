@@ -827,14 +827,8 @@ def build_historical_composite():
         # v1.5.0: allineamento con scoring engine rivisto
         # sA: Monetario — velocity + real yield + HY OAS
         vel_h = (gdp / m2).dropna()
-        sA_h = (exp_pct(vel_h, inv=True) + exp_pct(ry, inv=True) + exp_pct(hy, inv=True)) / 3
-        import streamlit as st
-        st.sidebar.write("vel_h", str(vel_h.dropna().index[-1].date()))
-        st.sidebar.write("ry", str(ry.dropna().index[-1].date()))
-        st.sidebar.write("hy", str(hy.dropna().index[-1].date()))
-        st.sidebar.write("ip_y", str(ip_y.dropna().index[-1].date()))
-        st.sidebar.write("ur", str(ur.dropna().index[-1].date()))
-        st.sidebar.write("pce_y", str(pce_y.dropna().index[-1].date()))
+        sA_h = (exp_pct(vel_h, inv=True).reindex(ry.index).ffill() + exp_pct(ry, inv=True) + exp_pct(hy, inv=True)) / 3
+        
         # sB: Econ.Reale — UNRATE livello (non diff3), INDPRO YoY, PCE YoY
         sB_h = (exp_pct(ip_y) + exp_pct(ur, inv=True) +
                 exp_pct(abs(pce_y - 2.0), inv=True)) / 3
