@@ -186,7 +186,7 @@ MUTED    = "#7a9ab0"
 GOLD_COL = "#f7c948"
 PURPLE   = "#bb88ff"
 
-FRED_API_KEY = "938a76ed726e8351f43e1b0c36365784"
+FRED_API_KEY = st.secrets.get("FRED_API_KEY", "")
 
 # ============================================================================
 # GPR EVENTS
@@ -452,7 +452,7 @@ def m2_velocity(m2, gdp):
         return pd.Series(dtype=float)
 
 def yoy(series, periods=12):
-    return series.pct_change(periods).mul(100).dropna()
+    return series.pct_change(periods, fill_method=None).mul(100).dropna()
 
 def output_gap_proxy(indpro):
     """
@@ -785,7 +785,7 @@ def compute_regime(growth, inflation):
     return     "DISINFLAZIONE", BLUE, "Condizioni reali deboli · pressione monetaria contenuta · favorevole bond lunghi"
 
 # ============================================================================
-# SERIE STORICA
+# SERIE STORICA — v1.6.3 FIX: composite non più troncato da ULC tardivo
 # ============================================================================
 @st.cache_data(ttl=3600*6)
 def build_historical_composite():
@@ -827,26 +827,37 @@ def build_historical_composite():
         # v1.5.0: allineamento con scoring engine rivisto
         # sA: Monetario — velocity + real yield + HY OAS
         vel_h = (gdp / m2).dropna()
-        sA_h = (exp_pct(vel_h, inv=True) + exp_pct(ry, inv=True) + exp_pct(hy, inv=True)) / 3
+        sA_h = (exp_pct(vel_h, inv=True).reindex(ry.index).ffill() + exp_pct(ry, inv=True) + exp_pct(hy, inv=True)) / 3
+        
         # sB: Econ.Reale — UNRATE livello (non diff3), INDPRO YoY, PCE YoY
-        sB_h = (exp_pct(ip_y) + exp_pct(ur, inv=True) +
-                exp_pct(abs(pce_y - 2.0), inv=True)) / 3
+        ref_idx = ry.index  # ry arriva a marzo 2026 — indice di riferimento
+        sB_h = (exp_pct(ip_y).reindex(ref_idx).ffill() +
+                exp_pct(ur, inv=True).reindex(ref_idx).ffill() +
+                exp_pct(abs(pce_y - 2.0), inv=True).reindex(ref_idx).ffill()) / 3
         # sCD: Policy & Structure — impulso fiscale + ULC YoY
-        sCD_h = (exp_pct(imp_f, inv=False) + exp_pct(ulc_y, inv=True)) / 2
+        # v1.6.3 FIX: ULC (ULCNFB) ha ritardo pubblicazione ~3-4 trimestri.
+        # reindex su sA_h.index + ffill propaga l'ultimo valore disponibile;
+        # fillna(50) per periodi senza storia → score neutro invece di NaN.
+        # Questo evita che il dropna() successivo tronchi il composite.
+        _ulc_pct = exp_pct(ulc_y, inv=True).reindex(sA_h.index).ffill()
+        _imp_pct = exp_pct(imp_f, inv=False).reindex(sA_h.index).ffill()
+        sCD_h = (_imp_pct + _ulc_pct.fillna(50)) / 2
         sE_h = pd.Series(50.0, index=sA_h.index)
 
         # Proxy inflazione regime: PCE YoY — expanding ma su finestra 25Y
         # Questo evita che anni 70-80 gonfino il percentile nel backtest
-        pce_pct_h = exp_pct(pce_y)  # expanding su campione disponibile (25Y caricati)
+        # v1.6.4 FIX: ffill prima del DataFrame — PCEPILFE ha ritardo 2-3 mesi
+        # che troncava il composite a settembre 2025 invece di marzo 2026
+        pce_pct_h = exp_pct(pce_y).reindex(sA_h.index).ffill()
 
-        # Colonne core — dropna solo su queste
+        # dropna solo su sA e sB — entrambi mensili e aggiornati in tempo reale
         df = pd.DataFrame({"sA": sA_h, "sB": sB_h, "sCD": sCD_h,
                            "sE": sE_h, "pce_pct": pce_pct_h,
-                           "pce_yoy": pce_y,
-                           "ur_diff6": ur.diff(6),
-                           "ip_yoy": ip_y,
+                           "pce_yoy": pce_y.reindex(sA_h.index).ffill(),
+                           "ur_diff6": ur.diff(6).reindex(sA_h.index).ffill(),
+                           "ip_yoy": ip_y.reindex(sA_h.index).ffill(),
                            "ry": ry.reindex(sA_h.index).ffill()
-                           }).dropna(subset=["sA","sB","sCD","pce_pct"])
+                           }).dropna(subset=["sA","sB"])
 
         # GDP reale YoY — aggiunto separatamente per non azzerare il df
         # A191RL1Q225SBEA è già in % YoY, trimestrale → ffill mensile
@@ -947,7 +958,7 @@ with st.sidebar:
         '🧭 MACRO CORE ENGINE</div>', unsafe_allow_html=True)
     st.markdown(
         '<div style="font-size:0.58rem;letter-spacing:3px;color:#4a6070;'
-        'text-transform:uppercase;margin-bottom:14px">v1.6.2 · Regime Monitor</div>',
+        'text-transform:uppercase;margin-bottom:14px">v1.6.3 · Regime Monitor</div>',
         unsafe_allow_html=True)
 
     st.markdown('<div class="sidebar-section">📊 PMI Composito</div>', unsafe_allow_html=True)
@@ -1078,7 +1089,7 @@ except Exception:
 # ============================================================================
 st.markdown('<div class="main-title">🧭 Macro Core Engine</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="sub-title">4-Pillar Macro Regime Monitor · FRED + yfinance · Percentile Expanding · v1.6.2</div>',
+    '<div class="sub-title">4-Pillar Macro Regime Monitor · FRED + yfinance · Percentile Expanding · v1.6.3</div>',
     unsafe_allow_html=True)
 st.markdown(
     f'<div style="font-size:0.58rem;color:{MUTED};text-align:right;margin-top:2px;margin-bottom:4px">'
@@ -1172,24 +1183,16 @@ with tab1:
         st.markdown('<div class="section-label">Mappa Quadranti</div>', unsafe_allow_html=True)
         fig_quad = go.Figure()
         lq = base_layout("", 300)
-        # v1.6.1: assi allineati con classificazione regime assoluta
-        # X = Pressione Monetaria (inflation_proxy: PCE YoY rolling 10Y, 0=bassa, 100=alta)
-        # Y = Crescita reale (growth_score = sB, 0=debole, 100=forte)
-        # Quadranti:
-        #   X<50, Y>50 → bassa pressione, alta crescita  = ESPANSIONE EQUILIBRATA  (verde, in alto a sinistra)
-        #   X>50, Y>50 → alta pressione,  alta crescita  = ESPANSIONE SOTTO PRESSIONE (arancio, in alto a destra)
-        #   X>50, Y<50 → alta pressione,  bassa crescita = STAGFLAZIONE             (rosso, in basso a destra)
-        #   X<50, Y<50 → bassa pressione, bassa crescita = DISINFLAZIONE            (blu, in basso a sinistra)
         lq["xaxis"] = dict(range=[0,100], title="Pressione Monetaria →",
                            gridcolor=GRID_COL, tickfont=dict(size=8, color=MUTED))
         lq["yaxis"] = dict(range=[0,100], title="Crescita Reale →",
                            gridcolor=GRID_COL, tickfont=dict(size=8, color=MUTED))
         lq["showlegend"] = False
         lq["shapes"] = [
-            dict(type="rect", x0=0,  x1=50, y0=50, y1=100, fillcolor="rgba(0,245,196,0.06)",  line_width=0),  # ESPANSIONE EQUILIBRATA
-            dict(type="rect", x0=50, x1=100,y0=50, y1=100, fillcolor="rgba(245,166,35,0.06)", line_width=0),  # ESPANSIONE SOTTO PRESSIONE
-            dict(type="rect", x0=50, x1=100,y0=0,  y1=50,  fillcolor="rgba(255,77,109,0.06)", line_width=0),  # STAGFLAZIONE
-            dict(type="rect", x0=0,  x1=50, y0=0,  y1=50,  fillcolor="rgba(77,166,255,0.06)", line_width=0),  # DISINFLAZIONE
+            dict(type="rect", x0=0,  x1=50, y0=50, y1=100, fillcolor="rgba(0,245,196,0.06)",  line_width=0),
+            dict(type="rect", x0=50, x1=100,y0=50, y1=100, fillcolor="rgba(245,166,35,0.06)", line_width=0),
+            dict(type="rect", x0=50, x1=100,y0=0,  y1=50,  fillcolor="rgba(255,77,109,0.06)", line_width=0),
+            dict(type="rect", x0=0,  x1=50, y0=0,  y1=50,  fillcolor="rgba(77,166,255,0.06)", line_width=0),
         ]
         fig_quad.update_layout(**lq)
         for qx, qy, ql, qc in [
@@ -1202,7 +1205,6 @@ with tab1:
                 font=dict(family="Syne", size=9, color=qc), showarrow=False)
         fig_quad.add_vline(x=50, line_dash="dash", line_color=GRID_COL, line_width=1)
         fig_quad.add_hline(y=50, line_dash="dash", line_color=GRID_COL, line_width=1)
-        # Punto: X=inflation_proxy (pressione monetaria), Y=growth_score (crescita reale)
         fig_quad.add_trace(go.Scatter(x=[inflation_proxy], y=[growth_score], mode="markers",
             marker=dict(size=16, color=regime_color, line=dict(color="white", width=2)),
             showlegend=False))
@@ -1280,7 +1282,7 @@ with tab1:
         fig_h.add_hline(y=40, line_dash="dot", line_color=RED, line_width=1)
         fig_h.add_hline(y=50, line_dash="solid", line_color=GRID_COL, line_width=0.8)
         for col_name, col_hex in [("Monetario",BLUE),("Econ.Reale",CYAN),
-                                   ("Fiscale",ORANGE),("Produttivo",PURPLE)]:
+                                   ("Policy",ORANGE)]:
             if col_name in h.columns:
                 fig_h.add_trace(go.Scatter(x=h.index, y=h[col_name], name=col_name,
                     line=dict(color=col_hex, width=0.8, dash="dot"), opacity=0.3))
@@ -1442,17 +1444,14 @@ with tab2:
             fig.update_layout(**base_layout("M2 Reale (CPI deflazionato)", 230))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-        # Velocity — v1.4.2: GDP trimestrale → espanso mensile con ffill, poi ratio su M2 mensile
+        # Velocity
         try:
             _m2v  = fred_data["M2"].copy()
             _gdpv = fred_data["GDP"].copy()
             _m2v.index  = pd.to_datetime(_m2v.index).normalize()
             _gdpv.index = pd.to_datetime(_gdpv.index).normalize()
-            # M2: mensile
             _m2v = _m2v.resample("MS").last()
-            # GDP: trimestrale → espandi a mensile con ffill
             _gdpv = _gdpv.resample("MS").last().reindex(_m2v.index).ffill().bfill()
-            # Calcola ratio solo dove entrambi hanno valori
             _common = _m2v.index.intersection(_gdpv.dropna().index)
             if len(_common) > 4:
                 _vel = (_gdpv.loc[_common] / _m2v.loc[_common]).dropna()
@@ -1464,7 +1463,7 @@ with tab2:
                         x=list(_vel_d.index.strftime("%Y-%m-%d")),
                         y=list(_vel_d.values.astype(float)),
                         line=dict(color=PURPLE, width=2), name="Velocity"))
-                    add_percentile_bands(fig, _vel, invert=True)  # invert=True: bassa velocity = area bull
+                    add_percentile_bands(fig, _vel, invert=True)
                     fig.update_layout(**base_layout("Velocity — GDP/M2", 220))
                     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
         except Exception as _e:
@@ -1525,7 +1524,7 @@ with tab2:
                 "MOVE Index — Bond Vol implicita Treasury (v1.4.1: da Geo → Monetario)", 230))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-        # M2/PIL — v1.4.2: GDP trimestrale → espanso mensile con ffill, poi ratio su M2 mensile
+        # M2/PIL
         try:
             _m2r  = fred_data["M2"].copy()
             _gdpr = fred_data["GDP"].copy()
@@ -1544,7 +1543,7 @@ with tab2:
                         x=list(_ratio_d.index.strftime("%Y-%m-%d")),
                         y=list(_ratio_d.values.astype(float)),
                         line=dict(color=CYAN, width=2), name="M2/PIL"))
-                    add_percentile_bands(fig, _ratio, invert=False)  # alto M2/PIL = bull
+                    add_percentile_bands(fig, _ratio, invert=False)
                     fig.update_layout(**base_layout("M2/PIL Ratio", 220))
                     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
         except Exception as _e:
@@ -1652,7 +1651,7 @@ with tab3:
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TAB 4 — POLICY & STRUCTURE (ex Fiscale + Produttivo)
+# TAB 4 — POLICY & STRUCTURE
 # ─────────────────────────────────────────────────────────────────────────────
 with tab4:
     st.markdown('<div class="section-label">C+D · Policy & Structure</div>', unsafe_allow_html=True)
@@ -1669,7 +1668,6 @@ with tab4:
                 score_cc(sc), score_pill(sc)), unsafe_allow_html=True)
     with fc2:
         cut = cutoff_date(years_display)
-        # Impulso Fiscale
         if not fred_data["DEFICIT"].empty:
             imp_f = fred_data["DEFICIT"].diff(1).dropna()
             imp_d = fbd(imp_f, cut)
@@ -1720,7 +1718,6 @@ with tab4:
             fig.update_layout(**base_layout("Retail Sales YoY (%) — consumi 70% PIL", 220))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-        # Debito/PIL — solo informativo
         if not fred_data["DEBT_GDP"].empty:
             debt_d = fbd(fred_data["DEBT_GDP"], cut)
             fig = go.Figure()
@@ -1729,8 +1726,6 @@ with tab4:
                 fillcolor="rgba(255,77,109,0.05)", name="Debito/PIL"))
             fig.update_layout(**base_layout("Debito Federale / PIL (%) — solo informativo", 200))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-
-    # Grafici C+D nella colonna destra (già nel blocco fc2)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TAB 5 — GEOPOLITICO
@@ -1769,7 +1764,6 @@ with tab5:
             gpr_ma12  = gpr_series.rolling(12).mean()
             gpr_col_v = RED if last_gpr > 150 else (ORANGE if last_gpr > 100 else CYAN)
 
-            # ── KPI bar ──────────────────────────────────────────────────────
             st.markdown(f"""
             <div style="background:{PAPER_BG};border:1px solid {gpr_col_v};border-radius:4px;
                         padding:8px 16px;display:flex;align-items:center;gap:28px;margin-bottom:8px">
@@ -1786,7 +1780,6 @@ with tab5:
               </div>
             </div>""", unsafe_allow_html=True)
 
-            # ── VISTA PANORAMICA 1900–OGGI ───────────────────────────────────
             st.markdown('<div class="section-label">GPR Index — Panoramica storica 1900–oggi</div>',
                 unsafe_allow_html=True)
 
@@ -1805,7 +1798,6 @@ with tab5:
                 annotation_text="Stress 150", annotation_position="right",
                 annotation_font=dict(color=RED, size=8))
 
-            # Raggruppa eventi vicini per evitare label sovrapposti (min 18 mesi distanza)
             ev_sorted = sorted(GPR_EVENTS.items())
             ev_plotted = []
             for ym, label in ev_sorted:
@@ -1813,10 +1805,8 @@ with tab5:
                     ev_date = pd.Timestamp(ym + "-01")
                     if ev_date < gpr_series.index.min() or ev_date > gpr_series.index.max():
                         continue
-                    # Salta se troppo vicino all'ultimo evento plottato
                     if ev_plotted and abs((ev_date - ev_plotted[-1]).days) < 540:
                         continue
-                    y_val = float(gpr_series.asof(ev_date)) if ev_date in gpr_series.index or True else 100
                     fig_full.add_vline(x=ev_date, line_dash="dot",
                         line_color="rgba(255,77,109,0.35)", line_width=1)
                     fig_full.add_annotation(
@@ -1841,7 +1831,6 @@ with tab5:
             )
             st.plotly_chart(fig_full, use_container_width=True, config={"displayModeBar": False})
 
-            # ── VISTA RECENTE con Threats / Acts subplot ─────────────────────
             st.markdown('<div class="section-label">GPR Index — Dettaglio recente (finestra selezionata)</div>',
                 unsafe_allow_html=True)
 
@@ -1879,7 +1868,6 @@ with tab5:
                 row=1, col=1, annotation_text="150", annotation_position="right",
                 annotation_font=dict(color=RED, size=8))
 
-            # Marker eventi nella finestra recente
             ev_added = []
             for ym, label in GPR_EVENTS.items():
                 try:
@@ -1896,7 +1884,6 @@ with tab5:
                 except Exception:
                     pass
 
-            # Subplot inferiore: GPR recente (bar)
             if not gpr_recent.empty:
                 gpr_r_cut = fbd(gpr_recent, cut_gpr)
                 if not gpr_r_cut.empty:
@@ -1922,7 +1909,6 @@ with tab5:
             )
             st.plotly_chart(fig_gpr, use_container_width=True, config={"displayModeBar": False})
 
-            # ── CORRELAZIONI GPR ─────────────────────────────────────────────
             corr_items = []
             for asset_name, asset_key, asset_src in [
                 ("Gold", "GOLD", "mkt"), ("Oil WTI", "OIL", "mkt"),
@@ -1956,7 +1942,6 @@ with tab5:
 
         else:
             st.info("GPR Index non disponibile. Carica il CSV dalla sidebar per abilitare il grafico.")
-
 
         gold = mkt_data.get("GOLD")
         if gold is not None and not gold.empty:
@@ -2103,7 +2088,7 @@ with tab6:
 # TAB 7 — METODOLOGIA
 # ─────────────────────────────────────────────────────────────────────────────
 with tab7:
-    st.markdown('<div class="section-label">Macro Core Engine v1.5.2 — Note Metodologiche</div>',
+    st.markdown('<div class="section-label">Macro Core Engine v1.6.3 — Note Metodologiche</div>',
         unsafe_allow_html=True)
 
     col_m1, col_m2 = st.columns(2)
@@ -2174,18 +2159,19 @@ with tab7:
         <div class="metric-tile">
           <div class="metric-label">CHANGELOG</div>
           <div style="font-size:0.62rem;color:{TEXT_COL};line-height:1.9;margin-top:8px">
+            <span style="color:{CYAN}">FIX v1.6.3</span> Composite storico troncato da ULC tardivo<br>
+            <span style="color:{CYAN}">FIX v1.6.3</span> sCD_h: reindex+ffill+fillna(50) su sA_h.index<br>
+            <span style="color:{CYAN}">FIX v1.6.3</span> dropna: rimosso "sCD" dal subset obbligatorio<br>
+            <span style="color:{LIME}">NEW v1.6.0</span> Classificazione regime su soglie assolute<br>
             <span style="color:{CYAN}">FIX v1.5.2</span> Velocity bande grafico invertite<br>
             <span style="color:{CYAN}">FIX v1.5.2</span> Radar 4 assi + etichette corrette<br>
-            <span style="color:{CYAN}">FIX v1.5.2</span> ISM MFG/SVC serie aggiornate<br>
             <span style="color:{LIME}">NEW v1.5.1</span> Growth Score = sB diretto<br>
             <span style="color:{LIME}">NEW v1.5.1</span> PCE proxy rolling 10Y<br>
             <span style="color:{LIME}">NEW v1.5.0</span> Pilastri C+D fusi → Policy &amp; Structure<br>
             <span style="color:{LIME}">NEW v1.5.0</span> Pesi: A=25% B=35% CD=25% E=15%<br>
             <span style="color:{LIME}">NEW v1.5.0</span> UNRATE livello (no diff3)<br>
-            <span style="color:{LIME}">NEW v1.5.0</span> ISM Services Δ3M + Retail YoY aggiunti<br>
             <span style="color:{ORANGE}">RIM v1.5.0</span> TCU · NFP · Output Gap · Produttività<br>
             <span style="color:{CYAN}">FIX v1.4.3</span> PMI pct_score · HY OAS bp · Oil YoY<br>
-            <span style="color:{CYAN}">FIX v1.4.3</span> Impulso fiscale invert=False<br>
             <span style="color:{LIME}">NEW v1.4.1</span> GPR Index · DXY 30Y · MOVE → A
           </div>
         </div>""", unsafe_allow_html=True)
