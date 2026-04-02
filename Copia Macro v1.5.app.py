@@ -1,51 +1,17 @@
 """
-MACRO CORE ENGINE v1.5.0
+MACRO CORE ENGINE v1.6.4
 ========================
 5-Pillar Macro Regime Monitor
 Companion: Settoriale · Commodity Supercycle · Bond Monitor · Equity Pulse
 
-v1.5.0 — audit empirico scoring engine (TradingView + letteratura):
-  - UNRATE: diff(3) → livello (pct_score invert=True, correlazione 0.75 vs SPY)
-  - NFP diff(3): rimosso da score (correlazione -0.53, COVID spike distorce)
-  - TCU: rimosso da score (correlazione -0.18, economia servizi dominante)
-  - Output Gap: rimosso da score (derivato da INDPRO debole)
-  - Produttività YoY: rimossa da score (derivato da INDPRO debole)
-  - Debito/PIL: solo informativo (trend monotono → pct_score invalido)
-  - Pilastri C+D fusi in "Policy & Structure" (Bridgewater framework)
-  - ISM Services delta: aggiunto a pilastro C+D
-  - Retail Sales YoY: aggiunto a pilastro C+D
-  - Pesi rivisti: A=25% B=35% CD=25% E=15% (basati su correlazioni empiriche)
-  - Proxy inflazione regime: PCE YoY percentile invece di 100-Monetario
-  - build_historical_composite: allineato con nuovo scoring engine
+v1.6.4 — FIX compatibilità pandas 2.2+:
+  - resample("M")  → resample("ME")  (MonthEnd)
+  - resample("Q")  → resample("QE")  (QuarterEnd)
+  - Alias legacy "M" e "Q" rimossi in pandas 2.2 → ValueError: invalid freq
 
-v1.4.3 — audit scoring engine:
-  - PMI: formula lineare → pct_score expanding su serie ISM storica (confrontabile)
-  - Impulso Fiscale: invert corretto (False) — espansivo = bull breve termine
-  - HY OAS: pct_score calcolato in bp (uniformità, no ambiguità unità)
-  - Output Gap: rimosso Savitzky-Golay (lookforward bias) → rolling causale 36m
-  - Oil Geopolitico: livello assoluto → YoY change (distingue shock domanda/offerta)
-  - build_historical_composite: allineato con nuovo scoring engine
-  - M2/PIL rimosso da score (ridondante con Velocity) — solo grafico informativo
-  - EEM: formula lineare → pct_score expanding su rendimento 3M
-
-v1.4.2 — fix:
-  - BUG FIX: m2_gdp_ratio e m2_velocity usano resample("QS") per allineamento
-    corretto con GDP FRED (fix grafico M2/PIL vuoto e Velocity assente)
-
-v1.4.1 — patch:
-  - MOVE Index spostato da Geopolitico → Monetario (misura vol tassi, non geo)
-  - GPR Index (Caldara & Iacoviello) integrato nel Pilastro E Geopolitico
-  - File uploader CSV GPR in sidebar
-  - DXY lookback esteso a 30Y
-  - PMI summary card mostra valore numerico (bug fix)
-
-v1.4 — fix + upgrade:
-  - HY OAS: unità corretta (×100 → basis points)
-  - Serie storica: percentile expanding
-  - PMI automatico via FRED
-  - STLFSI Financial Stress Index
-  - Regime Persistence Metric
-  - Tab Backtest rendimenti per regime
+v1.6.3 — FIX: composite non più troncato da ULC tardivo
+v1.6.0 — Classificazione regime su soglie assolute
+v1.5.0 — audit empirico scoring engine
 """
 
 import streamlit as st
@@ -63,7 +29,7 @@ warnings.filterwarnings("ignore")
 # PAGE CONFIG
 # ============================================================================
 st.set_page_config(
-    page_title="MACRO CORE ENGINE v1.4",
+    page_title="MACRO CORE ENGINE v1.6.4",
     page_icon="🧭",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -345,7 +311,6 @@ def load_fred_series(series_id, years=20):
     start = (datetime.now() - timedelta(days=365*years)).strftime("%Y-%m-%d")
     try:
         s = fred_client.get_series(series_id, observation_start=start).dropna()
-        # Normalizza indice a DatetimeIndex tz-naive
         if not isinstance(s.index, pd.DatetimeIndex):
             s.index = pd.to_datetime(s.index)
         if hasattr(s.index, "tz") and s.index.tz is not None:
@@ -369,10 +334,8 @@ def load_all_fred():
     d["PAYEMS"]    = load_fred_series("PAYEMS",       20)
     d["PCE"]       = load_fred_series("PCEPILFE",     20)
     d["RETAIL"]    = load_fred_series("RSXFS",        20)
-    # ISM rimosso da FRED nel 2016 — nessun proxy affidabile disponibile
-    # Il PMI composito viene inserito manualmente dalla sidebar (slider)
-    d["ISM_MFG"] = pd.Series(dtype=float)
-    d["ISM_SVC"] = pd.Series(dtype=float)
+    d["ISM_MFG"]   = pd.Series(dtype=float)
+    d["ISM_SVC"]   = pd.Series(dtype=float)
     d["DEFICIT"]   = load_fred_series("FYFSGDA188S",  30)
     d["DEBT_GDP"]  = load_fred_series("GFDEGDQ188S",  30)
     d["TCU"]       = load_fred_series("TCU",          20)
@@ -400,10 +363,9 @@ def load_market_data():
     return result
 
 # ============================================================================
-# DATA TRANSFORMS — v1.4.2: fix QS resample per allineamento GDP FRED
+# DATA TRANSFORMS
 # ============================================================================
 def _to_dti(s):
-    """Forza indice a DatetimeIndex tz-naive — robusto a object/string/tz-aware da FRED."""
     s = s.copy()
     if not isinstance(s.index, pd.DatetimeIndex):
         s.index = pd.to_datetime(s.index)
@@ -420,8 +382,7 @@ def m2_gdp_ratio(m2, gdp):
         gdp_q = gdp.resample("QS").last().ffill()
         g, m  = gdp_q.align(m2_q, join="inner")
         if len(g) == 0: return pd.Series(dtype=float)
-        ratio = (m / g).dropna()
-        return ratio
+        return (m / g).dropna()
     except Exception:
         return pd.Series(dtype=float)
 
@@ -430,8 +391,8 @@ def m2_real(m2, cpi):
     try:
         m2  = _to_dti(m2)
         cpi = _to_dti(cpi)
-        m2_m  = m2.resample("M").last()
-        cpi_m = cpi.resample("M").last()
+        m2_m  = m2.resample("ME").last()   # FIX: "M" → "ME"
+        cpi_m = cpi.resample("ME").last()  # FIX: "M" → "ME"
         m2_m, cpi_m = m2_m.align(cpi_m, join="inner")
         if len(m2_m) == 0: return pd.Series(dtype=float)
         return (m2_m / (cpi_m / cpi_m.iloc[0]) * 100).dropna()
@@ -455,13 +416,6 @@ def yoy(series, periods=12):
     return series.pct_change(periods, fill_method=None).mul(100).dropna()
 
 def output_gap_proxy(indpro):
-    """
-    Output gap proxy causale — nessun lookforward bias.
-    Usa rolling mean a 36 mesi (causale) come trend di lungo periodo.
-    Savitzky-Golay rimosso in v1.4.3: filtro simmetrico introduce lookforward bias
-    che invalida il backtest storico (il trend al mese T usava dati fino a T+N).
-    Rolling 36m: ogni punto usa solo dati passati → statisticamente valido.
-    """
     if indpro.empty or len(indpro) < 36: return pd.Series(dtype=float)
     trend = indpro.rolling(36, min_periods=24).mean()
     return ((indpro - trend) / trend * 100).dropna()
@@ -470,7 +424,7 @@ def pmi_auto_fred(ism_mfg, ism_svc):
     if ism_mfg.empty and ism_svc.empty: return None
     if ism_mfg.empty: return float(ism_svc.iloc[-1]) if not ism_svc.empty else None
     if ism_svc.empty: return float(ism_mfg.iloc[-1]) if not ism_mfg.empty else None
-    a, b = ism_mfg.resample("M").last().align(ism_svc.resample("M").last(), join="inner")
+    a, b = ism_mfg.resample("ME").last().align(ism_svc.resample("ME").last(), join="inner")  # FIX
     if len(a) == 0: return None
     return float(a.iloc[-1] * 0.60 + b.iloc[-1] * 0.40)
 
@@ -478,7 +432,7 @@ def pmi_auto_fred(ism_mfg, ism_svc):
 # INDICATOR METADATA
 # ============================================================================
 INDICATOR_META = {
-    "M2/PIL":              "C",   # informativo — inverso di Velocity, escluso da score
+    "M2/PIL":              "C",
     "M2 Reale":            "C",
     "Velocity (GDP/M2)":   "C",
     "Real Yield 10Y":      "L",
@@ -510,8 +464,6 @@ def score_monetary(d):
 
     mg = m2_gdp_ratio(d["M2"], d["GDP"])
     if not mg.empty:
-        # M2/PIL è l'inverso esatto di Velocity (GDP/M2) → ridondante nello score
-        # Tenuto come grafico informativo, score=None (come Deficit/PIL nel fiscale)
         ind["M2/PIL"] = {"value": fmt(float(mg.iloc[-1]), 3), "score": None,
                          "series": mg, "unit": "", "desc": "M2 / PIL nominale · solo informativo"}
 
@@ -527,32 +479,29 @@ def score_monetary(d):
         vel_m = vel.sort_index().resample("MS").last().reindex(
             pd.date_range(vel.index.min(), vel.index.max(), freq="MS")
         ).ffill().bfill()
-        # v1.4.3: invert=True — velocity bassa coincide con QE/bull market (post-2008, post-COVID)
-        # velocity alta coincide con restrizione monetaria/bear. Evidenza storica: r negativa con SPY.
-        # Score calcolato su vel_m mensile, stessa serie usata per il grafico
         s = pct_score(vel_m, invert=True)
         scores.append(s)
         ind["Velocity (GDP/M2)"] = {"value": fmt(float(vel.iloc[-1]), 3), "score": s,
                                      "series": vel_m, "unit": "x",
                                      "desc": "Velocita' moneta · bassa = liquidita' abbondante = bull"}
 
-    ry = d["REALYIELD"].resample("M").last() if not d["REALYIELD"].empty else pd.Series(dtype=float)
+    # FIX: resample("ME") invece di resample("M")
+    ry = d["REALYIELD"].resample("ME").last() if not d["REALYIELD"].empty else pd.Series(dtype=float)
     if not ry.empty:
         s = pct_score(ry, invert=True)
         scores.append(s)
         ind["Real Yield 10Y"] = {"value": fmt(float(ry.iloc[-1]), 2), "score": s,
                                   "series": ry, "unit": "%", "desc": "TIPS 10Y · basso = bull"}
 
-    hy = d["HY_OAS"].resample("M").last() if not d["HY_OAS"].empty else pd.Series(dtype=float)
+    hy = d["HY_OAS"].resample("ME").last() if not d["HY_OAS"].empty else pd.Series(dtype=float)  # FIX
     if not hy.empty:
-        # v1.4.3: converte in bp prima del pct_score — uniformità e chiarezza
         hy_bp = hy * 100
         s = pct_score(hy_bp, invert=True)
         scores.append(s)
         ind["HY OAS Spread"] = {"value": fmt(float(hy_bp.iloc[-1]), 0), "score": s,
                                  "series": hy_bp, "unit": "bp", "desc": "Spread HY · basso = no stress"}
 
-    stlfsi = d["STLFSI"].resample("M").last() if not d["STLFSI"].empty else pd.Series(dtype=float)
+    stlfsi = d["STLFSI"].resample("ME").last() if not d["STLFSI"].empty else pd.Series(dtype=float)  # FIX
     if not stlfsi.empty:
         s = pct_score(stlfsi, invert=True)
         scores.append(s)
@@ -562,7 +511,7 @@ def score_monetary(d):
 
     move = d.get("MOVE")
     if move is not None and not (isinstance(move, pd.Series) and move.empty) and len(move) > 60:
-        move_m = move.resample("M").last() if isinstance(move.index, pd.DatetimeIndex) else move
+        move_m = move.resample("ME").last() if isinstance(move.index, pd.DatetimeIndex) else move  # FIX
         s = pct_score(move_m, invert=True)
         scores.append(s)
         ind["MOVE Index"] = {"value": fmt(float(move.iloc[-1]), 1), "score": s,
@@ -580,22 +529,20 @@ def score_real_economy(d, pmi_override):
     pmi_source = "manuale" if pmi_override is not None else ("FRED ISM" if pmi_auto is not None else "N/A")
 
     if pmi is not None:
-        # v1.4.3: pct_score su serie ISM storica — confrontabile con altri indicatori
         ism_combined = pd.Series(dtype=float)
         if not d.get("ISM_MFG", pd.Series()).empty and not d.get("ISM_SVC", pd.Series()).empty:
-            a = d["ISM_MFG"].resample("M").last()
-            b = d["ISM_SVC"].resample("M").last()
+            a = d["ISM_MFG"].resample("ME").last()   # FIX
+            b = d["ISM_SVC"].resample("ME").last()   # FIX
             a, b = a.align(b, join="inner")
             if len(a) > 0:
                 ism_combined = (a * 0.60 + b * 0.40)
         elif not d.get("ISM_MFG", pd.Series()).empty:
-            ism_combined = d["ISM_MFG"].resample("M").last()
+            ism_combined = d["ISM_MFG"].resample("ME").last()   # FIX
         elif not d.get("ISM_SVC", pd.Series()).empty:
-            ism_combined = d["ISM_SVC"].resample("M").last()
+            ism_combined = d["ISM_SVC"].resample("ME").last()   # FIX
         if len(ism_combined) >= 20:
             s = pct_score(ism_combined)
         else:
-            # fallback: formula lineare solo se serie storica insufficiente
             s = min(100, max(0, (pmi - 30) / (70 - 30) * 100))
         scores.append(s)
         ind["PMI Composito"] = {"value": fmt(pmi, 1), "score": round(s, 1),
@@ -604,7 +551,7 @@ def score_real_economy(d, pmi_override):
                                  "desc": f">52 exp · <48 contr · fonte: {pmi_source}"}
 
     if not d["INDPRO"].empty:
-        ip_yoy = yoy(d["INDPRO"]).resample("M").last()
+        ip_yoy = yoy(d["INDPRO"]).resample("ME").last()   # FIX
         if not ip_yoy.empty:
             s = pct_score(ip_yoy)
             scores.append(s)
@@ -612,21 +559,16 @@ def score_real_economy(d, pmi_override):
                                   "series": ip_yoy, "unit": "%", "desc": "Produzione industriale YoY"}
 
     if not d["UNRATE"].empty:
-        # v1.5.0: livello invece di diff(3) — correlazione 0.75 vs SPY stabile su 30Y
-        # diff(3) introduceva COVID spike che distorceva il percentile expanding
-        ur_m = d["UNRATE"].resample("M").last()
+        ur_m = d["UNRATE"].resample("ME").last()   # FIX
         if not ur_m.empty:
-            s = pct_score(ur_m, invert=True)  # disoccupazione bassa = bull
+            s = pct_score(ur_m, invert=True)
             scores.append(s)
             ind["Disoccupazione"] = {"value": fmt(float(ur_m.iloc[-1]), 1), "score": s,
                                       "series": ur_m, "unit": "%",
                                       "desc": "UNRATE · bassa = mercato lavoro forte · corr. 0.75 vs SPY"}
 
-    # v1.5.0: NFP diff(3) rimosso — correlazione -0.53 vs SPY, COVID spike distorce
-    # NFP rimane come grafico informativo nel tab ma non entra nello score
-
     if not d["PCE"].empty:
-        pce_yoy = yoy(d["PCE"]).resample("M").last()
+        pce_yoy = yoy(d["PCE"]).resample("ME").last()   # FIX
         if not pce_yoy.empty:
             s = pct_score(abs(pce_yoy - 2.0), invert=True)
             scores.append(s)
@@ -637,16 +579,8 @@ def score_real_economy(d, pmi_override):
 
 
 def score_policy_structure(d):
-    """
-    v1.5.0: Pilastri C+D fusi in "Policy & Structure" (Bridgewater framework).
-    Rimossi: TCU (corr -0.18), Output Gap (INDPRO debole), Produttività (INDPRO debole),
-             Debito/PIL (trend monotono, pct_score invalido).
-    Aggiunti: ISM Services delta, Retail Sales YoY.
-    Mantenuti: Impulso Fiscale, ULC YoY.
-    """
     ind, scores = {}, []
 
-    # Impulso Fiscale — leva stimolo/contrazione
     if not d["DEFICIT"].empty:
         impulse = d["DEFICIT"].diff(1).dropna()
         if not impulse.empty:
@@ -657,15 +591,14 @@ def score_policy_structure(d):
                                        "desc": "Delta deficit/PIL · espansivo = bull breve termine"}
         ind["Deficit/PIL"] = {"value": fmt(float(d["DEFICIT"].iloc[-1]), 1), "score": None,
                                "series": d["DEFICIT"], "unit": "% PIL", "desc": "Solo informativo"}
-    # Debito/PIL — solo informativo (trend monotono invalida pct_score)
+
     if not d["DEBT_GDP"].empty:
         ind["Debito/PIL"] = {"value": fmt(float(d["DEBT_GDP"].iloc[-1]), 1), "score": None,
                               "series": d["DEBT_GDP"], "unit": "%",
                               "desc": "Debito federale / PIL · solo informativo (trend strutturale)"}
 
-    # ULC YoY — costi lavoro, pressione margini
     if not d["ULC"].empty:
-        ulc_yoy = yoy(d["ULC"], 4).resample("Q").last()
+        ulc_yoy = yoy(d["ULC"], 4).resample("QE").last()   # FIX: "Q" → "QE"
         if not ulc_yoy.empty:
             s = pct_score(ulc_yoy, invert=True)
             scores.append(s)
@@ -673,20 +606,18 @@ def score_policy_structure(d):
                                "series": ulc_yoy, "unit": "%",
                                "desc": "Unit labor costs YoY · alto = pressione margini"}
 
-    # ISM Services delta — Hedge Fund Journal: tra i top 6 leading indicators
     if not d.get("ISM_SVC", pd.Series()).empty:
-        ism_svc = d["ISM_SVC"].resample("M").last()
-        ism_delta = ism_svc.diff(3).dropna()  # accelerazione trimestrale ISM
+        ism_svc = d["ISM_SVC"].resample("ME").last()   # FIX
+        ism_delta = ism_svc.diff(3).dropna()
         if len(ism_delta) >= 20:
-            s = pct_score(ism_delta)  # delta positivo = accelerazione = bull
+            s = pct_score(ism_delta)
             scores.append(s)
             ind["ISM Services Δ3M"] = {"value": fmt(float(ism_svc.iloc[-1]), 1), "score": s,
                                         "series": ism_delta, "unit": "",
                                         "desc": "ISM Services accelerazione 3M · positivo = espansione"}
 
-    # Retail Sales YoY — consumi 70% PIL USA
     if not d["RETAIL"].empty:
-        ret_yoy = yoy(d["RETAIL"]).resample("M").last()
+        ret_yoy = yoy(d["RETAIL"]).resample("ME").last()   # FIX
         if not ret_yoy.empty:
             s = pct_score(ret_yoy)
             scores.append(s)
@@ -701,21 +632,18 @@ def score_geopolitical(mkt, gpr_df=None):
     ind, scores = {}, []
     oil = mkt.get("OIL")
     if oil is not None and len(oil) > 250:
-        # v1.4.3: YoY invece di livello assoluto — distingue shock da domanda (bull) vs
-        # shock da offerta/geopolitico (bear). Accelerazione YoY negativa = rischio.
-        oil_m = oil.resample("M").last()
+        oil_m = oil.resample("ME").last()   # FIX
         oil_yoy = oil_m.pct_change(12).mul(100).dropna()
         if len(oil_yoy) >= 20:
-            s = pct_score(oil_yoy, invert=True)  # spike YoY = rischio inflattivo/geo = bear
+            s = pct_score(oil_yoy, invert=True)
             scores.append(s)
             ind["Oil (WTI)"] = {"value": fmt(float(oil.iloc[-1]), 1), "score": s,
                                  "series": oil_yoy, "unit": "$",
                                  "desc": "Petrolio YoY · spike = rischio inflattivo/geo"}
     eem = mkt.get("EEM")
     if eem is not None and len(eem) > 63:
-        # v1.4.3: percentile expanding su rendimento 3M — confrontabile con gli altri indicatori
         eem_3m_series = eem.pct_change(63).mul(100).dropna()
-        s = pct_score(eem_3m_series, invert=False)  # alto rendimento EM = bull = score alto
+        s = pct_score(eem_3m_series, invert=False)
         eem_3m_last = float(eem_3m_series.iloc[-1])
         scores.append(s)
         ind["EEM 3M"] = {"value": fmt(eem_3m_last, 1), "score": round(s, 1),
@@ -741,26 +669,10 @@ def score_geopolitical(mkt, gpr_df=None):
 
 
 def compute_regime_absolute(gdp_yoy, unrate_diff6m, indpro_yoy, pce_yoy, real_yield):
-    """
-    v1.6.0: classificazione regime su soglie assolute economicamente significative.
-    Settore-neutrale — non dipende da quale driver produce la crescita.
-
-    CONDIZIONI REALI (favorevoli se >= 2 su 3):
-      - PIL reale YoY > 1.5%
-      - UNRATE diff 6M <= 0 (mercato lavoro non deteriora)
-      - INDPRO YoY > 0% (produzione non in contrazione)
-
-    PRESSIONE MONETARIA (presente se >= 1 su 2):
-      - PCE YoY > 2.5% (inflazione sopra target Fed)
-      - Real Yield 10Y > 1.0% (costo reale denaro elevato)
-    """
-    # Condizioni reali
     cond_gdp    = (gdp_yoy is not None) and (gdp_yoy > 1.5)
     cond_ur     = (unrate_diff6m is not None) and (unrate_diff6m <= 0.0)
     cond_ip     = (indpro_yoy is not None) and (indpro_yoy > 0.0)
     real_ok     = sum([cond_gdp, cond_ur, cond_ip]) >= 2
-
-    # Pressione monetaria
     cond_pce    = (pce_yoy is not None) and (pce_yoy > 2.5)
     cond_ry     = (real_yield is not None) and (real_yield > 1.0)
     pressure_ok = cond_pce or cond_ry
@@ -775,7 +687,6 @@ def compute_regime_absolute(gdp_yoy, unrate_diff6m, indpro_yoy, pce_yoy, real_yi
 
 
 def compute_regime(growth, inflation):
-    """Fallback legacy — usato solo se i dati assoluti non sono disponibili."""
     if growth >= 50 and inflation < 50:
         return "ESPANSIONE EQUILIBRATA",     CYAN,   "Condizioni reali favorevoli · pressione monetaria contenuta · ottimale per equity"
     if growth >= 50 and inflation >= 50:
@@ -785,7 +696,7 @@ def compute_regime(growth, inflation):
     return     "DISINFLAZIONE", BLUE, "Condizioni reali deboli · pressione monetaria contenuta · favorevole bond lunghi"
 
 # ============================================================================
-# SERIE STORICA — v1.6.3 FIX: composite non più troncato da ULC tardivo
+# SERIE STORICA
 # ============================================================================
 @st.cache_data(ttl=3600*6)
 def build_historical_composite():
@@ -795,19 +706,19 @@ def build_historical_composite():
             start = (datetime.now() - timedelta(days=365*y)).strftime("%Y-%m-%d")
             return f.get_series(sid, observation_start=start).dropna()
 
-        m2    = gs("M2SL").resample("M").last()
-        gdp   = gs("GDP").resample("M").last().ffill()
-        ry    = gs("DFII10").resample("M").last()
-        hy    = gs("BAMLH0A0HYM2").resample("M").last()
-        ip    = gs("INDPRO").resample("M").last()
-        ur    = gs("UNRATE").resample("M").last()
-        nfp   = gs("PAYEMS").resample("M").last()
-        pce_s = gs("PCEPILFE").resample("M").last()
-        tcu   = gs("TCU").resample("M").last()
-        ulc_q = gs("ULCNFB").resample("Q").last().resample("M").ffill()
-        def_  = gs("FYFSGDA188S").resample("M").last().ffill()
-        debt  = gs("GFDEGDQ188S").resample("M").last().ffill()
-        # v1.6.0: PIL reale YoY per classificazione regime assoluta
+        # FIX: tutte le resample("M") → resample("ME"), resample("Q") → resample("QE")
+        m2    = gs("M2SL").resample("ME").last()
+        gdp   = gs("GDP").resample("ME").last().ffill()
+        ry    = gs("DFII10").resample("ME").last()
+        hy    = gs("BAMLH0A0HYM2").resample("ME").last()
+        ip    = gs("INDPRO").resample("ME").last()
+        ur    = gs("UNRATE").resample("ME").last()
+        nfp   = gs("PAYEMS").resample("ME").last()
+        pce_s = gs("PCEPILFE").resample("ME").last()
+        tcu   = gs("TCU").resample("ME").last()
+        ulc_q = gs("ULCNFB").resample("QE").last().resample("ME").ffill()   # FIX: QE + ME
+        def_  = gs("FYFSGDA188S").resample("ME").last().ffill()
+        debt  = gs("GFDEGDQ188S").resample("ME").last().ffill()
         gdp_real = gs("A191RL1Q225SBEA", 25).resample("QS").last().resample("MS").ffill()
 
         mg_h  = (m2 / gdp).dropna()
@@ -824,33 +735,21 @@ def build_historical_composite():
                 raw=True)
             return (100 - res) if inv else res
 
-        # v1.5.0: allineamento con scoring engine rivisto
-        # sA: Monetario — velocity + real yield + HY OAS
         vel_h = (gdp / m2).dropna()
         sA_h = (exp_pct(vel_h, inv=True).reindex(ry.index).ffill() + exp_pct(ry, inv=True) + exp_pct(hy, inv=True)) / 3
-        
-        # sB: Econ.Reale — UNRATE livello (non diff3), INDPRO YoY, PCE YoY
-        ref_idx = ry.index  # ry arriva a marzo 2026 — indice di riferimento
+
+        ref_idx = ry.index
         sB_h = (exp_pct(ip_y).reindex(ref_idx).ffill() +
                 exp_pct(ur, inv=True).reindex(ref_idx).ffill() +
                 exp_pct(abs(pce_y - 2.0), inv=True).reindex(ref_idx).ffill()) / 3
-        # sCD: Policy & Structure — impulso fiscale + ULC YoY
-        # v1.6.3 FIX: ULC (ULCNFB) ha ritardo pubblicazione ~3-4 trimestri.
-        # reindex su sA_h.index + ffill propaga l'ultimo valore disponibile;
-        # fillna(50) per periodi senza storia → score neutro invece di NaN.
-        # Questo evita che il dropna() successivo tronchi il composite.
+
         _ulc_pct = exp_pct(ulc_y, inv=True).reindex(sA_h.index).ffill()
         _imp_pct = exp_pct(imp_f, inv=False).reindex(sA_h.index).ffill()
         sCD_h = (_imp_pct + _ulc_pct.fillna(50)) / 2
         sE_h = pd.Series(50.0, index=sA_h.index)
 
-        # Proxy inflazione regime: PCE YoY — expanding ma su finestra 25Y
-        # Questo evita che anni 70-80 gonfino il percentile nel backtest
-        # v1.6.4 FIX: ffill prima del DataFrame — PCEPILFE ha ritardo 2-3 mesi
-        # che troncava il composite a settembre 2025 invece di marzo 2026
         pce_pct_h = exp_pct(pce_y).reindex(sA_h.index).ffill()
 
-        # dropna solo su sA e sB — entrambi mensili e aggiornati in tempo reale
         df = pd.DataFrame({"sA": sA_h, "sB": sB_h, "sCD": sCD_h,
                            "sE": sE_h, "pce_pct": pce_pct_h,
                            "pce_yoy": pce_y.reindex(sA_h.index).ffill(),
@@ -859,15 +758,12 @@ def build_historical_composite():
                            "ry": ry.reindex(sA_h.index).ffill()
                            }).dropna(subset=["sA","sB"])
 
-        # GDP reale YoY — aggiunto separatamente per non azzerare il df
-        # A191RL1Q225SBEA è già in % YoY, trimestrale → ffill mensile
         try:
             gdp_real_m = gdp_real.reindex(df.index, method="ffill")
             df["gdp_yoy"] = gdp_real_m
         except Exception:
             df["gdp_yoy"] = np.nan
 
-        # Pesi v1.5.0: A=25% B=35% CD=25% E=15%
         df["Composite"]  = df["sA"]*0.25 + df["sB"]*0.35 + df["sCD"]*0.25 + df["sE"]*0.15
         df["Monetario"]  = df["sA"]
         df["Econ.Reale"] = df["sB"]
@@ -885,28 +781,20 @@ def build_historical_composite():
 def build_regime_backtest(hist_df):
     try:
         hist = hist_df.copy()
-        # v1.5.1: growth = sB (Econ.Reale) diretto — non media con Policy
         hist["growth"]    = hist["Econ.Reale"]
-        # v1.5.0: PCE YoY percentile expanding come proxy inflazione
-        # 100-Monetario misurava stress finanziario, non inflazione CPI
-        # causava 2008-2009 classificato STAGFLATION invece di DISINFL.BUST
         if "PCE_pct" in hist.columns:
             hist["inflation"] = hist["PCE_pct"]
         else:
             hist["inflation"] = 100 - hist["Monetario"]
 
         def classify(row):
-            # v1.6.0: soglie assolute economicamente significative
-            # Condizioni reali (favorevoli se >= 2 su 3)
             cond_gdp = ("gdp_yoy" in row) and (not pd.isna(row["gdp_yoy"])) and (row["gdp_yoy"] > 1.5)
             cond_ur  = ("ur_diff6" in row) and (not pd.isna(row["ur_diff6"])) and (row["ur_diff6"] <= 0.0)
             cond_ip  = ("ip_yoy" in row) and (not pd.isna(row["ip_yoy"])) and (row["ip_yoy"] > 0.0)
             real_ok  = sum([cond_gdp, cond_ur, cond_ip]) >= 2
-            # Pressione monetaria (presente se >= 1 su 2)
             cond_pce = ("pce_yoy" in row) and (not pd.isna(row["pce_yoy"])) and (row["pce_yoy"] > 2.5)
             cond_ry  = ("ry" in row) and (not pd.isna(row["ry"])) and (row["ry"] > 1.0)
             pressure = cond_pce or cond_ry
-            # Classificazione
             if real_ok and not pressure:  return "ESPANSIONE EQUILIBRATA"
             if real_ok and pressure:      return "ESPANSIONE SOTTO PRESSIONE"
             if not real_ok and pressure:  return "STAGFLAZIONE"
@@ -919,7 +807,7 @@ def build_regime_backtest(hist_df):
                 df = yf.download(ticker, start="2000-01-01", progress=False, auto_adjust=True)
                 if not df.empty:
                     pr = df["Close"].squeeze().dropna()
-                    pr_m = pr.resample("M").last()
+                    pr_m = pr.resample("ME").last()   # FIX
                     ret_m = pr_m.pct_change().mul(100)
                     assets[ticker_name] = ret_m
             except Exception:
@@ -958,7 +846,7 @@ with st.sidebar:
         '🧭 MACRO CORE ENGINE</div>', unsafe_allow_html=True)
     st.markdown(
         '<div style="font-size:0.58rem;letter-spacing:3px;color:#4a6070;'
-        'text-transform:uppercase;margin-bottom:14px">v1.6.3 · Regime Monitor</div>',
+        'text-transform:uppercase;margin-bottom:14px">v1.6.4 · Regime Monitor</div>',
         unsafe_allow_html=True)
 
     st.markdown('<div class="sidebar-section">📊 PMI Composito</div>', unsafe_allow_html=True)
@@ -1026,26 +914,17 @@ sB, indB, pmi_src = score_real_economy(fred_data, pmi_manual)
 sCD, indCD        = score_policy_structure(fred_data)
 sE, indE          = score_geopolitical(mkt_data, gpr_df)
 
-# v1.5.0: pesi rivisti su base empirica (correlazioni TradingView + letteratura)
-# A=25% (M2 Reale corr 0.91), B=35% (UNRATE corr 0.75, dominante), CD=25%, E=15%
 pillar_scores = {"A · Monetario": sA, "B · Econ. Reale": sB,
                  "C+D · Policy & Structure": sCD, "E · Geopolitico": sE}
 
-composite       = sA*0.25 + sB*0.35 + sCD*0.25 + sE*0.15
-# v1.5.1: growth_score = sB diretto — correlazione 0.75 vs SPY, più predittivo
-# sCD contiene impulso fiscale/strutturale che è lento e distorce il segnale ciclico
-growth_score    = float(sB)
-# v1.5.0: proxy inflazione = PCE YoY percentile (non più 100-Monetario)
-# 100-Monetario misurava condizioni finanziarie restrittive, non inflazione CPI
-# Questo causava 2008-2009 classificato STAGFLATION invece di DISINFL.BUST
+composite    = sA*0.25 + sB*0.35 + sCD*0.25 + sE*0.15
+growth_score = float(sB)
+
 pce_series = fred_data.get("PCE", pd.Series())
 if not pce_series.empty:
-    pce_yoy_regime = yoy(pce_series).resample("M").last().dropna()
-    # v1.5.2: rolling 10Y — misura inflazione nel contesto recente
-    # expanding confronta con tutta la storia incluso picco 2022 → distorce
-    # rolling 10Y: PCE 2.6% si confronta con range 2015-oggi → più realistico
+    pce_yoy_regime = yoy(pce_series).resample("ME").last().dropna()   # FIX
     if len(pce_yoy_regime) >= 24:
-        window = min(120, len(pce_yoy_regime))  # 10 anni = 120 mesi
+        window = min(120, len(pce_yoy_regime))
         last_val = float(pce_yoy_regime.iloc[-1])
         last_window = pce_yoy_regime.iloc[-window:]
         inflation_proxy = float((last_window < last_val).mean() * 100)
@@ -1053,30 +932,22 @@ if not pce_series.empty:
         inflation_proxy = 100 - sA
 else:
     inflation_proxy = 100 - sA
-breadth         = float(np.mean([s > 50 for s in pillar_scores.values()]) * 100)
-confidence      = float(np.mean([abs(s - 50) for s in pillar_scores.values()]))
-# v1.6.0: usa soglie assolute se i dati sono disponibili
+
+breadth    = float(np.mean([s > 50 for s in pillar_scores.values()]) * 100)
+confidence = float(np.mean([abs(s - 50) for s in pillar_scores.values()]))
+
 try:
-    _gdp_yoy   = None
-    _ur_diff6m = None
-    _ip_yoy    = None
-    _pce_yoy   = None
-    _ry_val    = None
-    # PIL reale YoY
+    _gdp_yoy = _ur_diff6m = _ip_yoy = _pce_yoy = _ry_val = None
     _gdp_r = load_fred_series("A191RL1Q225SBEA", 5)
     if not _gdp_r.empty:
         _gdp_yoy = float(_gdp_r.iloc[-1])
-    # UNRATE diff 6M
     if not fred_data["UNRATE"].empty:
-        _ur = fred_data["UNRATE"].resample("M").last()
+        _ur = fred_data["UNRATE"].resample("ME").last()   # FIX
         _ur_diff6m = float(_ur.diff(6).dropna().iloc[-1])
-    # INDPRO YoY
     if not fred_data["INDPRO"].empty:
         _ip_yoy = float(yoy(fred_data["INDPRO"]).dropna().iloc[-1])
-    # PCE YoY
     if not fred_data["PCE"].empty:
         _pce_yoy = float(yoy(fred_data["PCE"]).dropna().iloc[-1])
-    # Real Yield
     if not fred_data["REALYIELD"].empty:
         _ry_val = float(fred_data["REALYIELD"].dropna().iloc[-1])
     regime_label, regime_color, regime_desc = compute_regime_absolute(
@@ -1089,7 +960,7 @@ except Exception:
 # ============================================================================
 st.markdown('<div class="main-title">🧭 Macro Core Engine</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="sub-title">4-Pillar Macro Regime Monitor · FRED + yfinance · Percentile Expanding · v1.6.3</div>',
+    '<div class="sub-title">4-Pillar Macro Regime Monitor · FRED + yfinance · Percentile Expanding · v1.6.4</div>',
     unsafe_allow_html=True)
 st.markdown(
     f'<div style="font-size:0.58rem;color:{MUTED};text-align:right;margin-top:2px;margin-bottom:4px">'
@@ -1239,7 +1110,7 @@ with tab1:
                                    ("Bond",ORANGE,"NEUTRALE","Carry ok, duration non premiata"),
                                    ("Commodity",ORANGE,"SELETTIVO","Domanda buona, no spike"),
                                    ("Cash",RED,"SOTTOPESO","Opportunity cost alto")],
-            "INFLATIONARY BOOM":  [("Equity",ORANGE,"SELETTIVO","Value/Energy over Growth"),
+            "ESPANSIONE SOTTO PRESSIONE": [("Equity",ORANGE,"SELETTIVO","Value/Energy over Growth"),
                                    ("Bond",RED,"NEGATIVO","Duration sotto pressione"),
                                    ("Commodity",CYAN,"OTTIMALE","Oil, metalli, soft commodity"),
                                    ("Cash",ORANGE,"NEUTRALE","Nominali alti, reali compressi")],
@@ -1247,7 +1118,7 @@ with tab1:
                                    ("Bond",RED,"NEGATIVO","Inflazione erode reale"),
                                    ("Commodity",CYAN,"PARZIALE","Energia e metalli preziosi"),
                                    ("Cash",CYAN,"RELATIVO","Tassi nominali elevati")],
-            "DISINFLATIONARY BUST":[("Equity",ORANGE,"DIFENSIVO","Qualita e dividendi"),
+            "DISINFLAZIONE":       [("Equity",ORANGE,"DIFENSIVO","Qualita e dividendi"),
                                     ("Bond",CYAN,"OTTIMALE","Duration lunga, flight to quality"),
                                     ("Commodity",RED,"NEGATIVO","Domanda debole"),
                                     ("Cash",ORANGE,"NEUTRALE","Rendimento reale positivo")],
@@ -1281,8 +1152,7 @@ with tab1:
         fig_h.add_hline(y=60, line_dash="dot", line_color=CYAN, line_width=1)
         fig_h.add_hline(y=40, line_dash="dot", line_color=RED, line_width=1)
         fig_h.add_hline(y=50, line_dash="solid", line_color=GRID_COL, line_width=0.8)
-        for col_name, col_hex in [("Monetario",BLUE),("Econ.Reale",CYAN),
-                                   ("Policy",ORANGE)]:
+        for col_name, col_hex in [("Monetario",BLUE),("Econ.Reale",CYAN),("Policy",ORANGE)]:
             if col_name in h.columns:
                 fig_h.add_trace(go.Scatter(x=h.index, y=h[col_name], name=col_name,
                     line=dict(color=col_hex, width=0.8, dash="dot"), opacity=0.3))
@@ -1423,8 +1293,7 @@ with tab2:
             score_cc(sA), score_pill(sA)), unsafe_allow_html=True)
         for iname, idata in indA.items():
             sc = idata.get("score")
-            if sc is None:
-                continue
+            if sc is None: continue
             st.markdown(tile_html(iname.upper(),
                 idata["value"] + " " + idata["unit"],
                 "Score: " + str(round(sc)) + "/100 · " + idata["desc"],
@@ -1433,7 +1302,6 @@ with tab2:
     with t2c2:
         cut = cutoff_date(years_display)
 
-        # M2 Reale
         mr = m2_real(fred_data["M2"], fred_data["CPI"])
         if not mr.empty:
             mr_d = fbd(mr, cut)
@@ -1444,7 +1312,6 @@ with tab2:
             fig.update_layout(**base_layout("M2 Reale (CPI deflazionato)", 230))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-        # Velocity
         try:
             _m2v  = fred_data["M2"].copy()
             _gdpv = fred_data["GDP"].copy()
@@ -1469,7 +1336,6 @@ with tab2:
         except Exception as _e:
             st.caption(f"Velocity errore: {_e}")
 
-        # Real Yield
         ry = fred_data["REALYIELD"]
         if not ry.empty:
             ry_d = fbd(ry, cut)
@@ -1482,7 +1348,6 @@ with tab2:
             fig.update_layout(**base_layout("Real Yield 10Y — TIPS (%)", 230))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-        # HY OAS
         hy = fred_data["HY_OAS"]
         if not hy.empty:
             hy_bp = hy * 100
@@ -1492,10 +1357,9 @@ with tab2:
                 line=dict(color=RED, width=2), fill="tozeroy",
                 fillcolor="rgba(255,77,109,0.07)", name="HY OAS (bp)"))
             add_percentile_bands(fig, hy_bp, invert=True)
-            fig.update_layout(**base_layout("HY OAS Spread (bp)  —  FIX v1.4: BAMLH0A0HYM2 × 100", 230))
+            fig.update_layout(**base_layout("HY OAS Spread (bp)", 230))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-        # STLFSI
         stlfsi = fred_data["STLFSI"]
         if not stlfsi.empty:
             st_d = fbd(stlfsi, cut)
@@ -1508,10 +1372,9 @@ with tab2:
                 line=dict(color=MAGENTA, width=2), fill="tozeroy",
                 fillcolor="rgba(255,43,212,0.07)", name="STLFSI"))
             fig.update_layout(**base_layout(
-                "St. Louis Financial Stress Index (STLFSI)  neg = nessuno stress  pos = stress elevato", 220))
+                "St. Louis Financial Stress Index — neg=nessuno stress  pos=stress elevato", 220))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-        # MOVE INDEX
         move = mkt_data.get("MOVE")
         if move is not None and not move.empty:
             move_d = fbd(move, cut)
@@ -1520,11 +1383,9 @@ with tab2:
                 line=dict(color=PURPLE, width=2), fill="tozeroy",
                 fillcolor="rgba(187,136,255,0.07)", name="MOVE"))
             add_percentile_bands(fig, move, invert=True)
-            fig.update_layout(**base_layout(
-                "MOVE Index — Bond Vol implicita Treasury (v1.4.1: da Geo → Monetario)", 230))
+            fig.update_layout(**base_layout("MOVE Index — Bond Vol implicita Treasury", 230))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-        # M2/PIL
         try:
             _m2r  = fred_data["M2"].copy()
             _gdpr = fred_data["GDP"].copy()
@@ -1683,7 +1544,7 @@ with tab4:
         col_ulc, col_ism = st.columns(2)
         with col_ulc:
             if not fred_data["ULC"].empty:
-                ulc_yoy = yoy(fred_data["ULC"], 4).resample("Q").last()
+                ulc_yoy = yoy(fred_data["ULC"], 4).resample("QE").last()   # FIX
                 ulc_d   = fbd(ulc_yoy, cut)
                 fig = go.Figure()
                 fig.add_hline(y=0, line_dash="solid", line_color=GRID_COL, line_width=1)
@@ -1695,7 +1556,7 @@ with tab4:
                 st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
         with col_ism:
             if not fred_data.get("ISM_SVC", pd.Series()).empty:
-                ism_svc = fred_data["ISM_SVC"].resample("M").last()
+                ism_svc = fred_data["ISM_SVC"].resample("ME").last()   # FIX
                 ism_d   = fbd(ism_svc, cut)
                 fig = go.Figure()
                 fig.add_hline(y=50, line_dash="dot", line_color=CYAN, line_width=1,
@@ -2088,7 +1949,7 @@ with tab6:
 # TAB 7 — METODOLOGIA
 # ─────────────────────────────────────────────────────────────────────────────
 with tab7:
-    st.markdown('<div class="section-label">Macro Core Engine v1.6.3 — Note Metodologiche</div>',
+    st.markdown('<div class="section-label">Macro Core Engine v1.6.4 — Note Metodologiche</div>',
         unsafe_allow_html=True)
 
     col_m1, col_m2 = st.columns(2)
@@ -2111,15 +1972,11 @@ with tab7:
           <div class="metric-label">ARCHITETTURA DEI PILASTRI</div>
           <div style="font-size:0.65rem;color:{TEXT_COL};line-height:1.8;margin-top:8px">
             <b style="color:{CYAN}">A · Monetario (25%)</b><br>
-            M2 Reale · Velocity (invert) · Real Yield · HY OAS · STLFSI · MOVE<br>
-            M2/PIL: solo informativo (inverso esatto di Velocity)<br><br>
+            M2 Reale · Velocity (invert) · Real Yield · HY OAS · STLFSI · MOVE<br><br>
             <b style="color:{LIME}">B · Economia Reale (35%)</b><br>
-            PMI Composito · INDPRO YoY · Disoccupazione (livello) · Core PCE YoY<br>
-            NFP: solo grafico informativo (corr. -0.53 vs SPY)<br><br>
+            PMI Composito · INDPRO YoY · Disoccupazione · Core PCE YoY<br><br>
             <b style="color:{ORANGE}">C+D · Policy &amp; Structure (25%)</b><br>
-            Impulso Fiscale · ULC YoY · ISM Services Δ3M · Retail Sales YoY<br>
-            Debito/PIL: solo informativo (trend strutturale)<br>
-            Rimossi: TCU (corr -0.18) · Output Gap (bias) · Produttività (INDPRO debole)<br><br>
+            Impulso Fiscale · ULC YoY · ISM Services Δ3M · Retail Sales YoY<br><br>
             <b style="color:{MAGENTA}">E · Geopolitico (15%)</b><br>
             Oil WTI YoY · EEM 3M · DXY · GPR Index (se CSV caricato)
           </div>
@@ -2128,16 +1985,12 @@ with tab7:
     with col_m2:
         st.markdown(f"""
         <div class="metric-tile" style="margin-bottom:12px">
-          <div class="metric-label">REGIME CLASSIFICATION</div>
+          <div class="metric-label">REGIME CLASSIFICATION — SOGLIE ASSOLUTE (v1.6.0)</div>
           <div style="font-size:0.65rem;color:{TEXT_COL};line-height:1.8;margin-top:8px">
-            <b style="color:{CYAN}">Classificazione: soglie assolute (v1.6.0)</b><br><br>
             Condizioni Reali (favorevoli se &ge;2 su 3):<br>
-            · PIL reale YoY &gt; 1.5%<br>
-            · UNRATE diff 6M &le; 0<br>
-            · INDPRO YoY &gt; 0%<br><br>
+            · PIL reale YoY &gt; 1.5% &nbsp;·&nbsp; UNRATE diff 6M &le; 0 &nbsp;·&nbsp; INDPRO YoY &gt; 0%<br><br>
             Pressione Monetaria (se &ge;1 su 2):<br>
-            · PCE YoY &gt; 2.5%<br>
-            · Real Yield &gt; 1.0%<br><br>
+            · PCE YoY &gt; 2.5% &nbsp;·&nbsp; Real Yield &gt; 1.0%<br><br>
             <b style="color:{CYAN}">ESPANSIONE EQUILIBRATA</b>: reale OK · no pressione<br>
             <b style="color:{ORANGE}">ESPANSIONE SOTTO PRESSIONE</b>: reale OK · pressione<br>
             <b style="color:{RED}">STAGFLAZIONE</b>: reale debole · pressione<br>
@@ -2146,31 +1999,15 @@ with tab7:
         </div>""", unsafe_allow_html=True)
 
         st.markdown(f"""
-        <div class="metric-tile" style="margin-bottom:12px">
-          <div class="metric-label">METRICHE SINTETICHE</div>
-          <div style="font-size:0.65rem;color:{TEXT_COL};line-height:1.8;margin-top:8px">
-            <b style="color:{BLUE}">Macro Breadth</b>: % pilastri con score &gt;50<br>
-            <b style="color:{MAGENTA}">Regime Confidence</b>: media |score - 50|<br>
-            <b style="color:{CYAN}">Regime Persistence</b>: std dev rolling 6M
-          </div>
-        </div>""", unsafe_allow_html=True)
-
-        st.markdown(f"""
         <div class="metric-tile">
           <div class="metric-label">CHANGELOG</div>
           <div style="font-size:0.62rem;color:{TEXT_COL};line-height:1.9;margin-top:8px">
+            <span style="color:{CYAN}">FIX v1.6.4</span> pandas 2.2+: resample("ME") e resample("QE")<br>
             <span style="color:{CYAN}">FIX v1.6.3</span> Composite storico troncato da ULC tardivo<br>
-            <span style="color:{CYAN}">FIX v1.6.3</span> sCD_h: reindex+ffill+fillna(50) su sA_h.index<br>
-            <span style="color:{CYAN}">FIX v1.6.3</span> dropna: rimosso "sCD" dal subset obbligatorio<br>
             <span style="color:{LIME}">NEW v1.6.0</span> Classificazione regime su soglie assolute<br>
-            <span style="color:{CYAN}">FIX v1.5.2</span> Velocity bande grafico invertite<br>
-            <span style="color:{CYAN}">FIX v1.5.2</span> Radar 4 assi + etichette corrette<br>
-            <span style="color:{LIME}">NEW v1.5.1</span> Growth Score = sB diretto<br>
-            <span style="color:{LIME}">NEW v1.5.1</span> PCE proxy rolling 10Y<br>
             <span style="color:{LIME}">NEW v1.5.0</span> Pilastri C+D fusi → Policy &amp; Structure<br>
             <span style="color:{LIME}">NEW v1.5.0</span> Pesi: A=25% B=35% CD=25% E=15%<br>
             <span style="color:{LIME}">NEW v1.5.0</span> UNRATE livello (no diff3)<br>
-            <span style="color:{ORANGE}">RIM v1.5.0</span> TCU · NFP · Output Gap · Produttività<br>
             <span style="color:{CYAN}">FIX v1.4.3</span> PMI pct_score · HY OAS bp · Oil YoY<br>
             <span style="color:{LIME}">NEW v1.4.1</span> GPR Index · DXY 30Y · MOVE → A
           </div>
